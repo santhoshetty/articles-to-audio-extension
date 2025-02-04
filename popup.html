@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8" />
+    <title>Article to Audio</title>
+    <style>
+        body {
+            width: 320px;
+            padding: 16px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            margin: 0;
+            background: #f8f9fa;
+        }
+
+        .header {
+            display: flex;
+            align-items: center;
+            margin-bottom: 16px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid #e9ecef;
+        }
+
+        .logo {
+            width: 32px;
+            height: 32px;
+            margin-right: 12px;
+        }
+
+        .title {
+            font-size: 18px;
+            font-weight: 600;
+            color: #212529;
+            margin: 0;
+        }
+
+        .button-container {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        button {
+            padding: 12px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s ease;
+        }
+
+        button:hover {
+            transform: translateY(-1px);
+        }
+
+        #saveArticleBtn {
+            background: #228be6;
+            color: white;
+        }
+
+        #saveArticleBtn:hover {
+            background: #1c7ed6;
+        }
+
+        #showArticlesBtn {
+            background: #f1f3f5;
+            color: #495057;
+        }
+
+        #showArticlesBtn:hover {
+            background: #e9ecef;
+        }
+
+        .icon {
+            margin-right: 8px;
+            font-size: 16px;
+        }
+
+        .settings-link {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-top: 16px;
+            padding: 8px;
+            color: #868e96;
+            text-decoration: none;
+            font-size: 13px;
+            border-radius: 6px;
+        }
+
+        .settings-link:hover {
+            background: #e9ecef;
+            color: #495057;
+        }
+
+        .status-message {
+            margin-top: 12px;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 13px;
+            display: none;
+        }
+
+        .status-message.success {
+            background: #d3f9d8;
+            color: #2b8a3e;
+        }
+
+        .status-message.error {
+            background: #ffe3e3;
+            color: #c92a2a;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="header">
+        <img src="icons/icon32.png" alt="Logo" class="logo">
+        <h1 class="title">Article to Audio</h1>
+    </div>
+
+    <div class="button-container">
+        <button id="saveArticleBtn">
+            <span class="icon">📝</span>
+            Save This Article
+        </button>
+        <button id="showArticlesBtn">
+            <span class="icon">📚</span>
+            Show All Articles
+        </button>
+    </div>
+
+    <a href="#" id="optionsLink" class="settings-link">
+        <span class="icon">⚙️</span>
+        Settings
+    </a>
+
+    <div id="statusMessage" class="status-message"></div>
+
+    <script src="popup.js"></script>
+</body>
+
+</html>
