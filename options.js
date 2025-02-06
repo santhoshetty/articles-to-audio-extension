@@ -38,4 +38,16 @@ document.addEventListener('DOMContentLoaded', async () => {
             status.style.display = 'none';
         }, 3000);
     }
+
+    // Add OpenAI API key field
+    const openaiKeyInput = document.getElementById('openaiKey');
+    chrome.storage.local.get(['openaiKey'], (result) => {
+        if (result.openaiKey) {
+            openaiKeyInput.value = result.openaiKey;
+        }
+    });
+
+    openaiKeyInput.addEventListener('change', () => {
+        chrome.storage.local.set({ openaiKey: openaiKeyInput.value });
+    });
 }); 

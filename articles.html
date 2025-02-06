@@ -207,6 +207,25 @@
             font-weight: 500;
             color: #212529;
         }
+
+        .button-container {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .action-button {
+            padding: 10px 20px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+
+        .action-button:hover {
+            background-color: #0056b3;
+        }
     </style>
 </head>
 
@@ -216,7 +235,10 @@
         Articles to Audio - Saved Articles
     </h1>
     <div id="articles-container"></div>
-    <button id="generateAudioBtn">Generate Audio Summary</button>
+    <div class="button-container">
+        <button id="generateAudioBtn">Generate Audio Summary</button>
+        <button id="generatePodcast" class="action-button">Generate Podcast</button>
+    </div>
 
     <script src="articles.js"></script>
 </body>
