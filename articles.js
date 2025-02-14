@@ -309,26 +309,51 @@ document.addEventListener("DOMContentLoaded", async () => {
                 };
             });
 
-            console.log('Selected articles:', articles); // Log the selected articles
+            const articleTitles = articles.map(article => article.title).join(', ');
+            console.log('Selected articles:', articleTitles); // Log the titles of the selected articles
 
-            // Generate summaries for articles without them
-            for (const article of articles) {
-                if (!article.summary) {
-                    console.log('Generating summary for article:', article.title); // Log the article title
-                    article.summary = await generateSummary(article.content); // Call the refactored function
-                }
-            }
+            // Prepare articles data for conversation script
+            const conversationData = articles.map(article => ({
+                text: article.text,
+                summary: article.summary || '', // Use existing summary or an empty string if it doesn't exist
+                title: article.title
+            }));
 
-            // Create conversation script
-            const conversationScript = await generateConversationScript(articles);
+            const conversationScript = await generateConversationScript(conversationData);
+            
+            // Log metadata for the selected articles
+            console.log(`Generating podcast for: ${articleTitles}`);
+            alert(`Generating podcast for: ${articleTitles}`); // Frontend log
 
-            // Generate audio for both speakers with different voices
-            const speaker1Audio = await generateSpeechAudio(conversationScript.speaker1Lines, 'alloy'); // Replace 'voice1' with the actual voice ID
-            const speaker2Audio = await generateSpeechAudio(conversationScript.speaker2Lines, 'onyx'); // Replace 'voice2' with the actual voice ID
-
+            // Generate audio for both speakers
+            const speaker1Audio = await generateSpeechAudio(conversationScript.speaker1Lines, 'alloy', storage.openaiKey);
+            const speaker2Audio = await generateSpeechAudio(conversationScript.speaker2Lines, 'onyx', storage.openaiKey);
+            
             // Pass the original script to combineAudioTracks
             const finalAudio = await combineAudioTracks(speaker1Audio, speaker2Audio, conversationScript);
-            playPodcast(finalAudio);
+
+            // Save the podcast in IndexedDB with metadata
+            const podcastId = `podcast-${Date.now()}`; // Unique ID for the podcast
+            await saveAudioFile(podcastId, finalAudio); // Save the podcast audio
+            console.log(`Podcast saved with ID: ${podcastId}`); // Log the podcast ID
+
+            // Create play/pause button for the podcast
+            const playPauseBtn = document.createElement('button');
+            playPauseBtn.className = 'play-pause-podcast-btn';
+            playPauseBtn.textContent = '▶️'; // Play symbol
+            document.getElementById('podcast-container').appendChild(playPauseBtn); // Append to a container
+
+            // Add click handler for the play/pause button
+            let podcastAudio = new Audio(URL.createObjectURL(finalAudio));
+            playPauseBtn.addEventListener('click', () => {
+                if (podcastAudio.paused) {
+                    podcastAudio.play();
+                    playPauseBtn.textContent = '⏸️'; // Pause symbol
+                } else {
+                    podcastAudio.pause();
+                    playPauseBtn.textContent = '▶️'; // Play symbol
+                }
+            });
 
         } catch (error) {
             console.error('Error generating podcast:', error);
@@ -556,20 +581,28 @@ async function generatePodcast() {
             };
         });
 
-        // Generate summaries for articles without them
-        for (const article of articles) {
-            if (!article.summary) {
-                console.log('Generating summary for article:', article.title); // Log the article title
-                article.summary = await generateSummary(article.content); // Call the refactored function
-            }
-        }
+        // // Generate summaries for articles without them
+        // for (const article of articles) {
+        //     console.log(article.title)
+        //     console.log(article.summary)
+        //     if (!article.summary || article.summary.trim() === '') { // Check if summary is empty
+        //         console.log('Generating summary for article:', article.title); // Log the article title
+        //         article.summary = await generateSummary(article.content); // Call the refactored function
+        //     }
+        // }
 
         // Create conversation script
-        const conversationScript = await generateConversationScript(articles);
+        const conversationData = articles.map(article => ({
+            text: article.text,
+            summary: article.summary || '', // Use existing summary or an empty string if it doesn't exist
+            title: article.title
+        }));
+
+        const conversationScript = await generateConversationScript(conversationData);
         
         // Generate audio for both speakers
-        const speaker1Audio = await generateSpeechAudio(conversationScript.speaker1Lines, 'alloy');
-        const speaker2Audio = await generateSpeechAudio(conversationScript.speaker2Lines, 'onyx');
+        const speaker1Audio = await generateSpeechAudio(conversationScript.speaker1Lines, 'alloy', storage.openaiKey);
+        const speaker2Audio = await generateSpeechAudio(conversationScript.speaker2Lines, 'onyx', storage.openaiKey);
         
         // Pass the original script to combineAudioTracks
         const finalAudio = await combineAudioTracks(speaker1Audio, speaker2Audio, conversationScript);
@@ -620,22 +653,23 @@ async function generateConversationScript(articles) {
     return parseConversationScript(data.choices[0].message.content);
 }
 
-async function generateSpeechAudio(textLines, apiKey) {
-    console.log(`Generating audio for ${textLines.length} lines with voice 'text-to-speech'`);
+async function generateSpeechAudio(textLines, voice, apiKey) {
+    console.log(`Generating audio for ${textLines.length} lines with voice '${voice}'`);
 
     // Generate audio for each line separately
     const audioPromises = textLines.map(async (line) => {
-        const response = await fetch('https://api.openai.com/v1/audio/speech/generate', {
+        const response = await fetch('https://api.openai.com/v1/audio/speech', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${apiKey}`
             },
             body: JSON.stringify({
-                model: 'text-to-speech',
+                model: 'tts-1',
                 input: {
                     text: line
-                }
+                },
+                voice: voice // Include the voice parameter in the request body
             })
         });
 
@@ -774,9 +808,13 @@ async function playPodcast(audioBlob) {
 }
 
 async function getOpenAIKey() {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
         chrome.storage.local.get(['openaiKey'], (result) => {
-            resolve(result.openaiKey);
+            if (result.openaiKey) {
+                resolve(result.openaiKey);
+            } else {
+                reject(new Error('API key not found'));
+            }
         });
     });
 }
