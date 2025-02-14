@@ -212,6 +212,34 @@ document.addEventListener("DOMContentLoaded", async () => {
         // Append delete button to the article element
         controls.appendChild(deleteBtn);
 
+        // Create summary element
+        const summaryElement = document.createElement('div');
+        summaryElement.className = 'article-summary';
+        summaryElement.id = `summary-${index}`;
+        summaryElement.innerHTML = `<strong>Summary:</strong> ${article.summary || 'No summary available.'}`; // Populate summary
+        summaryElement.style.display = 'none'; // Initially hide the summary
+        mainContent.appendChild(summaryElement); // Append summary to main content
+
+        // Create Show/Hide Summary button if a summary exists
+        if (article.summary) {
+            const showHideSummaryBtn = document.createElement('button');
+            showHideSummaryBtn.className = 'show-hide-summary-btn';
+            showHideSummaryBtn.textContent = 'Show Summary'; // Initial button text
+            mainContent.appendChild(showHideSummaryBtn);
+
+            // Add click handler for the Show/Hide Summary button
+            showHideSummaryBtn.addEventListener('click', () => {
+                console.log('Button clicked'); // Debugging line
+                if (summaryElement.style.display === 'none') {
+                    summaryElement.style.display = 'block'; // Show the summary
+                    showHideSummaryBtn.textContent = 'Hide Summary'; // Update button text
+                } else {
+                    summaryElement.style.display = 'none'; // Hide the summary
+                    showHideSummaryBtn.textContent = 'Show Summary'; // Update button text
+                }
+            });
+        }
+
         articleElement.appendChild(mainContent);
         articleElement.appendChild(controls);
         container.appendChild(articleElement);
@@ -493,9 +521,18 @@ async function generatePodcast() {
             const articleDiv = checkbox.closest('.article');
             return {
                 title: articleDiv.querySelector('.article-title').textContent,
-                content: articleDiv.querySelector('.article-content').textContent
+                content: articleDiv.querySelector('.article-content').textContent,
+                summary: articleDiv.querySelector('.article-summary')?.textContent // Assuming you have a summary element
             };
         });
+
+        // Generate summaries for articles without them
+        for (const article of articles) {
+            if (!article.summary) {
+                console.log('Generating summary for article:', article.title); // Log the article title
+                article.summary = await generateSummary(article.content); // Call the refactored function
+            }
+        }
 
         // Create conversation script
         const conversationScript = await generateConversationScript(articles);
