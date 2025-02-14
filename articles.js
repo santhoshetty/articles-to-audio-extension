@@ -98,6 +98,15 @@ document.addEventListener("DOMContentLoaded", async () => {
             playBtn.textContent = 'Play Audio';
             mainContent.appendChild(playBtn);
 
+            // Create Play/Pause button (initially hidden)
+            const playPauseBtn = document.createElement('button');
+            playPauseBtn.className = 'play-pause-btn';
+            playPauseBtn.textContent = '▶️'; // Play symbol
+            playPauseBtn.style.display = 'none'; // Initially hidden
+            mainContent.appendChild(playPauseBtn);
+
+            let audio; // Variable to hold the audio instance
+
             // Add click handler for the Play button
             playBtn.addEventListener('click', async () => {
                 try {
@@ -109,8 +118,29 @@ document.addEventListener("DOMContentLoaded", async () => {
                     }
 
                     const audioUrl = URL.createObjectURL(audioBlob); // Create a URL for the audio file
-                    const audio = new Audio(audioUrl);
-                    audio.play();
+                    audio = new Audio(audioUrl);
+
+                    // Show the Play/Pause button
+                    playPauseBtn.style.display = 'inline';
+
+                    // Add click handler for the Play/Pause button
+                    playPauseBtn.addEventListener('click', () => {
+                        if (audio.paused) {
+                            audio.play();
+                            playPauseBtn.textContent = '⏸️'; // Pause symbol
+                        } else {
+                            audio.pause();
+                            playPauseBtn.textContent = '▶️'; // Play symbol
+                        }
+                    });
+
+                    // Reset button text when audio ends
+                    audio.addEventListener('ended', () => {
+                        playPauseBtn.textContent = '▶️'; // Reset to Play symbol when audio ends
+                        playPauseBtn.style.display = 'none'; // Hide the button when audio ends
+                    });
+
+                    audio.play(); // Start playing audio immediately
                 } catch (error) {
                     console.error('Error playing audio:', error);
                     alert('Failed to play audio. Please try again.');
