@@ -81,7 +81,30 @@ document.addEventListener("DOMContentLoaded", async () => {
                     ${article.text}
                 </div>
                 <button class="expand-btn" data-index="${index}">Show More</button>
+                <button class="generate-summary-btn" data-index="${index}">${article.summary ? 'Re-generate Summary' : 'Generate Summary'}</button>
+                <div class="article-summary" id="summary-${index}"></div>
+                <button class="generate-audio-btn" data-index="${index}">Generate Audio</button>
+                <div class="audio-container" id="audio-container-${index}"></div>
             `;
+
+            // Check if summary exists and add Show Summary button
+            if (article.summary) {
+                const showSummaryBtn = document.createElement('button');
+                showSummaryBtn.className = 'show-summary-btn';
+                showSummaryBtn.textContent = 'Show Summary';
+                mainContent.appendChild(showSummaryBtn);
+
+                showSummaryBtn.addEventListener('click', () => {
+                    const summaryElement = mainContent.querySelector(`.article-summary#summary-${index}`);
+                    if (summaryElement.innerHTML) {
+                        summaryElement.innerHTML = ''; // Hide summary
+                        showSummaryBtn.textContent = 'Show Summary';
+                    } else {
+                        summaryElement.innerHTML = `<strong>Summary:</strong> ${article.summary}`;
+                        showSummaryBtn.textContent = 'Hide Summary';
+                    }
+                });
+            }
         } catch (error) {
             console.error('Error generating title:', error);
             const articleTitle = article.title?.trim() || 'Untitled Article';
@@ -92,8 +115,46 @@ document.addEventListener("DOMContentLoaded", async () => {
                     ${article.text}
                 </div>
                 <button class="expand-btn" data-index="${index}">Show More</button>
+                <button class="generate-summary-btn" data-index="${index}">${article.summary ? 'Re-generate Summary' : 'Generate Summary'}</button>
+                <div class="article-summary" id="summary-${index}"></div>
+                <button class="generate-audio-btn" data-index="${index}">Generate Audio</button>
+                <div class="audio-container" id="audio-container-${index}"></div>
             `;
         }
+
+        // Add click handler for the Generate/Re-generate Summary button
+        const generateSummaryBtn = mainContent.querySelector('.generate-summary-btn');
+        generateSummaryBtn.addEventListener('click', async () => {
+            try {
+                const summary = await generateSummary(article.text);
+                const summaryElement = mainContent.querySelector(`.article-summary#summary-${index}`);
+                summaryElement.innerHTML = `<strong>Summary:</strong> ${summary}`;
+
+                // Update the summary in the storage
+                storage.articles[index].summary = summary; // Update summary in the array
+                await chrome.storage.local.set({ articles: storage.articles }); // Save updated articles
+            } catch (error) {
+                console.error('Error generating summary:', error);
+                alert('Failed to generate summary. Please try again.');
+            }
+        });
+
+        // Add click handler for the Generate Audio button
+        const generateAudioBtn = mainContent.querySelector('.generate-audio-btn');
+        generateAudioBtn.addEventListener('click', async () => {
+            if (!article.summary) {
+                alert('Please generate a summary first.');
+                return;
+            }
+
+            try {
+                const audioBlob = await generateAudio(article.summary, "alloy");
+                // Handle the audioBlob as needed (e.g., play it, save it, etc.)
+            } catch (error) {
+                console.error('Error generating audio:', error);
+                alert('Failed to generate audio. Please try again.');
+            }
+        });
 
         // Add click handler directly to the button
         const expandBtn = mainContent.querySelector('.expand-btn');
@@ -341,24 +402,51 @@ async function generateSummary(text) {
     return data.choices[0].message.content.trim();
 }
 
-async function generateAudio(text, apiKey) {
-    const response = await fetch(
-        "https://api-inference.huggingface.co/models/espnet/kan-bayashi_ljspeech_vits",
-        {
-            headers: {
-                "Authorization": `Bearer ${apiKey}`,
-                "Content-Type": "application/json",
-            },
-            method: "POST",
-            body: JSON.stringify({ inputs: text }),
+async function generateAudio(text, voice = "alloy", retries = 3) {
+    const apiKey = await getOpenAIKey(); // Retrieve the OpenAI API key
+
+    console.log("Using API Key:", apiKey);
+    console.log("Text to convert:", text);
+    console.log("Voice selected:", voice);
+
+    for (let attempt = 0; attempt < retries; attempt++) {
+        try {
+            const response = await fetch("https://api.openai.com/v1/audio/speech", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                    "Authorization": `Bearer ${apiKey}`
+                },
+                body: JSON.stringify({
+                    model: "tts-1",
+                    input: text,
+                    voice: voice
+                })
+            });
+
+            console.log("Response Status:", response.status);
+
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(`❌ Error generating audio: ${errorText}`);
+            }
+
+            const audioBlob = await response.blob();
+            const audioUrl = URL.createObjectURL(audioBlob);
+            const audio = new Audio(audioUrl);
+            audio.play();
+
+            console.log("✅ Audio generated successfully!");
+            return audioBlob;
+
+        } catch (error) {
+            console.error(`Attempt ${attempt + 1} failed:`, error);
+            if (attempt === retries - 1) {
+                throw error; // Rethrow the error if it's the last attempt
+            }
+            await new Promise(resolve => setTimeout(resolve, 1000)); // Wait before retrying
         }
-    );
-
-    if (!response.ok) {
-        throw new Error('Failed to generate audio');
     }
-
-    return response.blob();
 }
 
 async function generateTitle(text, apiKey) {
@@ -465,24 +553,22 @@ async function generateConversationScript(articles) {
     return parseConversationScript(data.choices[0].message.content);
 }
 
-async function generateSpeechAudio(textLines, voice) {
-    const apiKey = await getOpenAIKey();
-    console.log(`Generating audio for ${textLines.length} lines with voice ${voice}`);
+async function generateSpeechAudio(textLines, apiKey) {
+    console.log(`Generating audio for ${textLines.length} lines with voice 'text-to-speech'`);
 
     // Generate audio for each line separately
     const audioPromises = textLines.map(async (line) => {
-        console.log('Generating audio for line:', line);
-        
-        const response = await fetch('https://api.openai.com/v1/audio/speech', {
+        const response = await fetch('https://api.openai.com/v1/audio/speech/generate', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
                 'Authorization': `Bearer ${apiKey}`
             },
             body: JSON.stringify({
-                model: 'tts-1',
-                input: line,
-                voice: voice
+                model: 'text-to-speech',
+                input: {
+                    text: line
+                }
             })
         });
 
@@ -498,7 +584,7 @@ async function generateSpeechAudio(textLines, voice) {
     // Wait for all audio generations to complete
     const audioBlobs = await Promise.all(audioPromises);
     console.log(`Generated ${audioBlobs.length} audio segments`);
-    return audioBlobs;
+    return audioBlobs; // Return the array of audio blobs
 }
 
 async function combineAudioTracks(audioBlobs1, audioBlobs2, conversation) {
@@ -654,4 +740,28 @@ function parseConversationScript(script) {
         speaker1Lines,
         speaker2Lines
     };
+}
+
+// Function to save audio file in IndexedDB
+async function saveAudioFile(id, audioBlob) {
+    const db = await openDb();
+    const tx = db.transaction("audioFiles", "readwrite");
+    const store = tx.objectStore("audioFiles");
+    store.put({ id, audioBlob });
+    return tx.complete;
+}
+
+// Function to open IndexedDB
+function openDb() {
+    return new Promise((resolve, reject) => {
+        const request = indexedDB.open("MyExtensionDB", 1);
+        request.onupgradeneeded = (event) => {
+            const db = event.target.result;
+            if (!db.objectStoreNames.contains("audioFiles")) {
+                db.createObjectStore("audioFiles", { keyPath: "id" });
+            }
+        };
+        request.onsuccess = (event) => resolve(event.target.result);
+        request.onerror = (event) => reject(event.target.error);
+    });
 }
