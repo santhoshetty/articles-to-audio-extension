@@ -70,6 +70,10 @@ document.addEventListener("DOMContentLoaded", async () => {
             const generatedTitle = await generateTitle(article.text, storage.openaiKey);
             const articleTitle = generatedTitle || 'Untitled Article';
 
+            // Update the title in the storage
+            storage.articles[index].title = articleTitle; // Update title in the array
+            await chrome.storage.local.set({ articles: storage.articles }); // Save updated articles
+
             mainContent.innerHTML = `
                 <h2 class="article-title">${articleTitle}</h2>
                 <div class="article-date">Saved on ${date}</div>
