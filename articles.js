@@ -65,61 +65,82 @@ document.addEventListener("DOMContentLoaded", async () => {
         const mainContent = document.createElement('div');
         mainContent.className = 'article-main';
 
-        // Generate title using OpenAI
-        try {
-            const generatedTitle = await generateTitle(article.text, storage.openaiKey);
-            const articleTitle = generatedTitle || 'Untitled Article';
+        // Check if the article already has a title
+        const existingTitle = article.title?.trim();
+        let articleTitle = existingTitle || 'Untitled Article';
 
-            // Update the title in the storage
-            storage.articles[index].title = articleTitle; // Update title in the array
-            await chrome.storage.local.set({ articles: storage.articles }); // Save updated articles
-
-            mainContent.innerHTML = `
-                <h2 class="article-title">${articleTitle}</h2>
-                <div class="article-date">Saved on ${date}</div>
-                <div class="article-content" id="content-${index}">
-                    ${article.text}
-                </div>
-                <button class="expand-btn" data-index="${index}">Show More</button>
-                <button class="generate-summary-btn" data-index="${index}">${article.summary ? 'Re-generate Summary' : 'Generate Summary'}</button>
-                <div class="article-summary" id="summary-${index}"></div>
-                <button class="generate-audio-btn" data-index="${index}">Generate Audio</button>
-                <div class="audio-container" id="audio-container-${index}"></div>
-            `;
-
-            // Check if summary exists and add Show Summary button
-            if (article.summary) {
-                const showSummaryBtn = document.createElement('button');
-                showSummaryBtn.className = 'show-summary-btn';
-                showSummaryBtn.textContent = 'Show Summary';
-                mainContent.appendChild(showSummaryBtn);
-
-                showSummaryBtn.addEventListener('click', () => {
-                    const summaryElement = mainContent.querySelector(`.article-summary#summary-${index}`);
-                    if (summaryElement.innerHTML) {
-                        summaryElement.innerHTML = ''; // Hide summary
-                        showSummaryBtn.textContent = 'Show Summary';
-                    } else {
-                        summaryElement.innerHTML = `<strong>Summary:</strong> ${article.summary}`;
-                        showSummaryBtn.textContent = 'Hide Summary';
-                    }
-                });
+        // Generate title using OpenAI only if it doesn't exist
+        if (!existingTitle) {
+            try {
+                const generatedTitle = await generateTitle(article.text, storage.openaiKey);
+                articleTitle = generatedTitle || 'Untitled Article';
+            } catch (error) {
+                console.error('Error generating title:', error);
             }
-        } catch (error) {
-            console.error('Error generating title:', error);
-            const articleTitle = article.title?.trim() || 'Untitled Article';
-            mainContent.innerHTML = `
-                <h2 class="article-title">${articleTitle}</h2>
-                <div class="article-date">Saved on ${date}</div>
-                <div class="article-content" id="content-${index}">
-                    ${article.text}
-                </div>
-                <button class="expand-btn" data-index="${index}">Show More</button>
-                <button class="generate-summary-btn" data-index="${index}">${article.summary ? 'Re-generate Summary' : 'Generate Summary'}</button>
-                <div class="article-summary" id="summary-${index}"></div>
-                <button class="generate-audio-btn" data-index="${index}">Generate Audio</button>
-                <div class="audio-container" id="audio-container-${index}"></div>
-            `;
+        }
+
+        mainContent.innerHTML = `
+            <h2 class="article-title">${articleTitle}</h2>
+            <div class="article-date">Saved on ${date}</div>
+            <div class="article-content" id="content-${index}">
+                ${article.text}
+            </div>
+            <button class="expand-btn" data-index="${index}">Show More</button>
+            <button class="generate-summary-btn" data-index="${index}">${article.summary ? 'Re-generate Summary' : 'Generate Summary'}</button>
+            <div class="article-summary" id="summary-${index}"></div>
+        `;
+
+        // Check if the audio field is non-empty
+        if (article.audio) {
+            // Create Play Audio button
+            const playBtn = document.createElement('button');
+            playBtn.className = 'play-btn';
+            playBtn.textContent = 'Play Audio';
+            mainContent.appendChild(playBtn);
+
+            // Add click handler for the Play button
+            playBtn.addEventListener('click', async () => {
+                try {
+                    const audioBlob = await getAudioFile(article.audio); // Function to retrieve audio from IndexedDB
+                    console.log("Retrieved audioBlob:", audioBlob); // Log the audioBlob for debugging
+
+                    if (!audioBlob) {
+                        throw new Error("Audio blob is undefined or null.");
+                    }
+
+                    const audioUrl = URL.createObjectURL(audioBlob); // Create a URL for the audio file
+                    const audio = new Audio(audioUrl);
+                    audio.play();
+                } catch (error) {
+                    console.error('Error playing audio:', error);
+                    alert('Failed to play audio. Please try again.');
+                }
+            });
+        } else {
+            // Create Generate Audio button
+            const generateAudioBtn = document.createElement('button');
+            generateAudioBtn.className = 'generate-audio-btn';
+            generateAudioBtn.textContent = 'Generate Audio';
+            mainContent.appendChild(generateAudioBtn);
+
+            // Add click handler for the Generate Audio button
+            generateAudioBtn.addEventListener('click', async () => {
+                const audioUrl = await generateAudio(article.summary, defaultVoice, index);
+                // Remove the Generate Audio button and replace with Play button
+                generateAudioBtn.remove();
+
+                // Create Play button
+                const playBtn = document.createElement('button');
+                playBtn.className = 'play-btn';
+                playBtn.textContent = 'Play Audio';
+                mainContent.appendChild(playBtn);
+
+                // Add click handler for the Play button
+                playBtn.addEventListener('click', () => {
+                    const audio = new Audio(audioUrl);
+                    audio.play();
+                });
+            });
         }
 
         // Add click handler for the Generate/Re-generate Summary button
@@ -136,23 +157,6 @@ document.addEventListener("DOMContentLoaded", async () => {
             } catch (error) {
                 console.error('Error generating summary:', error);
                 alert('Failed to generate summary. Please try again.');
-            }
-        });
-
-        // Add click handler for the Generate Audio button
-        const generateAudioBtn = mainContent.querySelector('.generate-audio-btn');
-        generateAudioBtn.addEventListener('click', async () => {
-            if (!article.summary) {
-                alert('Please generate a summary first.');
-                return;
-            }
-
-            try {
-                const audioBlob = await generateAudio(article.summary, "alloy");
-                // Handle the audioBlob as needed (e.g., play it, save it, etc.)
-            } catch (error) {
-                console.error('Error generating audio:', error);
-                alert('Failed to generate audio. Please try again.');
             }
         });
 
@@ -317,8 +321,7 @@ async function generateAudioForSelected(articles) {
             const summary = await retryAsync(() => generateSummary(article.text), 3);
 
             // 2. Generate audio using HuggingFace with retry logic
-            const audioBlob = await retryAsync(() => generateAudio(summary, storage.huggingfaceKey), 3);
-            const audioUrl = URL.createObjectURL(audioBlob);
+            const audioUrl = await retryAsync(() => generateAudio(summary, storage.huggingfaceKey, index), 3);
 
             // 3. Create summary and audio display
             const contentDiv = document.createElement('div');
@@ -402,51 +405,48 @@ async function generateSummary(text) {
     return data.choices[0].message.content.trim();
 }
 
-async function generateAudio(text, voice = "alloy", retries = 3) {
+async function generateAudio(text, voice = "alloy", articleIndex) {
     const apiKey = await getOpenAIKey(); // Retrieve the OpenAI API key
 
     console.log("Using API Key:", apiKey);
     console.log("Text to convert:", text);
     console.log("Voice selected:", voice);
 
-    for (let attempt = 0; attempt < retries; attempt++) {
-        try {
-            const response = await fetch("https://api.openai.com/v1/audio/speech", {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    "Authorization": `Bearer ${apiKey}`
-                },
-                body: JSON.stringify({
-                    model: "tts-1",
-                    input: text,
-                    voice: voice
-                })
-            });
+    const response = await fetch("https://api.openai.com/v1/audio/speech", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+            model: "tts-1",
+            input: text,
+            voice: voice
+        })
+    });
 
-            console.log("Response Status:", response.status);
+    console.log("Response Status:", response.status);
 
-            if (!response.ok) {
-                const errorText = await response.text();
-                throw new Error(`❌ Error generating audio: ${errorText}`);
-            }
-
-            const audioBlob = await response.blob();
-            const audioUrl = URL.createObjectURL(audioBlob);
-            const audio = new Audio(audioUrl);
-            audio.play();
-
-            console.log("✅ Audio generated successfully!");
-            return audioBlob;
-
-        } catch (error) {
-            console.error(`Attempt ${attempt + 1} failed:`, error);
-            if (attempt === retries - 1) {
-                throw error; // Rethrow the error if it's the last attempt
-            }
-            await new Promise(resolve => setTimeout(resolve, 1000)); // Wait before retrying
-        }
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`❌ Error generating audio: ${errorText}`);
     }
+
+    const audioBlob = await response.blob();
+    const audioUrl = URL.createObjectURL(audioBlob);
+
+    const audioId = `audio-${Date.now()}`; // Unique ID for the audio
+    await saveAudioFile(audioId, audioBlob); // Save audio file in IndexedDB
+
+    // Update local storage with audio reference
+    const storage = await chrome.storage.local.get(['articles']);
+    const articles = storage.articles || [];
+    articles[articleIndex].audio = audioId; // Store the audio ID in the article
+    await chrome.storage.local.set({ articles }); // Update storage
+
+    console.log("✅ Audio generated and saved successfully!");
+
+    return audioUrl; // Return the audio URL for playback
 }
 
 async function generateTitle(text, apiKey) {
@@ -747,7 +747,12 @@ async function saveAudioFile(id, audioBlob) {
     const db = await openDb();
     const tx = db.transaction("audioFiles", "readwrite");
     const store = tx.objectStore("audioFiles");
-    store.put({ id, audioBlob });
+
+    // Log the audioBlob to ensure it's not null
+    console.log("Saving audioBlob with ID:", id, audioBlob);
+
+    // Save the audio file in IndexedDB
+    await store.put({ id, audioBlob }); // Ensure the structure is correct
     return tx.complete;
 }
 
@@ -763,5 +768,42 @@ function openDb() {
         };
         request.onsuccess = (event) => resolve(event.target.result);
         request.onerror = (event) => reject(event.target.error);
+    });
+}
+
+// Function to retrieve audio from IndexedDB
+async function getAudioFile(id) {
+    return new Promise((resolve, reject) => {
+        const dbRequest = openDb(); // Open the database
+        dbRequest.then(db => {
+            const tx = db.transaction("audioFiles", "readonly");
+            const store = tx.objectStore("audioFiles");
+            const audioRequest = store.get(id);
+
+            audioRequest.onsuccess = (event) => {
+                const audioFile = event.target.result; // Get the result from the event
+                if (!audioFile) {
+                    reject(new Error(`No audio file found with ID: ${id}`));
+                } else {
+                    console.log("Retrieved audioFile ID:", id);
+                    console.log("Retrieved audioFile properties:", audioFile); // Log the entire audioFile object
+
+                    // Access the audioBlob correctly
+                    const audioBlob = audioFile.audioBlob; // Accessing the audioBlob directly
+                    if (audioBlob) {
+                        console.log("Retrieved audioBlob properties:");
+                        console.log("Size:", audioBlob.size); // Size in bytes
+                        console.log("Type:", audioBlob.type); // MIME type
+                        resolve(audioBlob); // Resolve the promise with the audioBlob
+                    } else {
+                        reject(new Error("AudioBlob is undefined or null."));
+                    }
+                }
+            };
+
+            audioRequest.onerror = (event) => {
+                reject(new Error("Failed to retrieve audio file from IndexedDB."));
+            };
+        }).catch(reject); // Handle any errors opening the database
     });
 }
