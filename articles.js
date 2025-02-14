@@ -155,7 +155,9 @@ document.addEventListener("DOMContentLoaded", async () => {
 
             // Add click handler for the Generate Audio button
             generateAudioBtn.addEventListener('click', async () => {
-                const audioUrl = await generateAudio(article.summary, defaultVoice, index);
+                const audioBlob = await generateAudio(article.summary, defaultVoice, index);
+                const audioUrl = URL.createObjectURL(audioBlob); // Create URL from blob
+
                 // Remove the Generate Audio button and replace with Play button
                 generateAudioBtn.remove();
 
@@ -170,6 +172,16 @@ document.addEventListener("DOMContentLoaded", async () => {
                     const audio = new Audio(audioUrl);
                     audio.play();
                 });
+
+                // Save audio to IndexedDB and update article's audio field
+                const audioId = `audio-${Date.now()}`; // Unique ID for the audio
+                await saveAudioFile(audioId, audioBlob); // Save audio file in IndexedDB
+
+                // Update local storage with audio reference
+                const storage = await chrome.storage.local.get(['articles']);
+                const articles = storage.articles || [];
+                articles[index].audio = audioId; // Store the audio ID in the article
+                await chrome.storage.local.set({ articles }); // Update storage
             });
         }
 
@@ -309,12 +321,25 @@ document.addEventListener("DOMContentLoaded", async () => {
                 };
             });
 
-            const articleTitles = articles.map(article => article.title).join(', ');
+            const articleTitles = articles.map(article => article.title).sort().join(', '); // Sort titles for consistency
             console.log('Selected articles:', articleTitles); // Log the titles of the selected articles
+
+            // Create a unique podcast ID based on the article titles
+            const podcastId = `podcast-${btoa(articleTitles)}`; // Base64 encode the titles for a unique ID
+
+            // Check if the podcast already exists in IndexedDB
+            const existingPodcast = await getAudioFile(podcastId);
+            if (existingPodcast) {
+                console.log(`Podcast already exists with ID: ${podcastId}`);
+                alert(`Playing existing podcast for: ${articleTitles}`);
+                const podcastAudio = new Audio(URL.createObjectURL(existingPodcast));
+                podcastAudio.play();
+                return; // Exit if podcast already exists
+            }
 
             // Prepare articles data for conversation script
             const conversationData = articles.map(article => ({
-                text: article.text,
+                text: article.content,
                 summary: article.summary || '', // Use existing summary or an empty string if it doesn't exist
                 title: article.title
             }));
@@ -333,7 +358,6 @@ document.addEventListener("DOMContentLoaded", async () => {
             const finalAudio = await combineAudioTracks(speaker1Audio, speaker2Audio, conversationScript);
 
             // Save the podcast in IndexedDB with metadata
-            const podcastId = `podcast-${Date.now()}`; // Unique ID for the podcast
             await saveAudioFile(podcastId, finalAudio); // Save the podcast audio
             console.log(`Podcast saved with ID: ${podcastId}`); // Log the podcast ID
 
@@ -341,7 +365,16 @@ document.addEventListener("DOMContentLoaded", async () => {
             const playPauseBtn = document.createElement('button');
             playPauseBtn.className = 'play-pause-podcast-btn';
             playPauseBtn.textContent = '▶️'; // Play symbol
-            document.getElementById('podcast-container').appendChild(playPauseBtn); // Append to a container
+
+            // Create podcast container if it doesn't exist
+            let podcastContainer = document.getElementById('podcast-container');
+            if (!podcastContainer) {
+                podcastContainer = document.createElement('div');
+                podcastContainer.id = 'podcast-container'; // Set the ID for the new container
+                document.body.appendChild(podcastContainer); // Append it to the body or a specific parent element
+            }
+
+            podcastContainer.appendChild(playPauseBtn); // Append to the podcast container
 
             // Add click handler for the play/pause button
             let podcastAudio = new Audio(URL.createObjectURL(finalAudio));
@@ -488,7 +521,7 @@ async function generateSummary(text) {
     return data.choices[0].message.content.trim();
 }
 
-async function generateAudio(text, voice = "alloy", articleIndex) {
+async function generateAudio(text, voice = "alloy") {
     const apiKey = await getOpenAIKey(); // Retrieve the OpenAI API key
 
     console.log("Using API Key:", apiKey);
@@ -516,20 +549,9 @@ async function generateAudio(text, voice = "alloy", articleIndex) {
     }
 
     const audioBlob = await response.blob();
-    const audioUrl = URL.createObjectURL(audioBlob);
+    console.log("✅ Audio generated successfully!");
 
-    const audioId = `audio-${Date.now()}`; // Unique ID for the audio
-    await saveAudioFile(audioId, audioBlob); // Save audio file in IndexedDB
-
-    // Update local storage with audio reference
-    const storage = await chrome.storage.local.get(['articles']);
-    const articles = storage.articles || [];
-    articles[articleIndex].audio = audioId; // Store the audio ID in the article
-    await chrome.storage.local.set({ articles }); // Update storage
-
-    console.log("✅ Audio generated and saved successfully!");
-
-    return audioUrl; // Return the audio URL for playback
+    return audioBlob; // Return the audio blob for further processing
 }
 
 async function generateTitle(text, apiKey) {
@@ -601,8 +623,8 @@ async function generatePodcast() {
         const conversationScript = await generateConversationScript(conversationData);
         
         // Generate audio for both speakers
-        const speaker1Audio = await generateSpeechAudio(conversationScript.speaker1Lines, 'alloy', storage.openaiKey);
-        const speaker2Audio = await generateSpeechAudio(conversationScript.speaker2Lines, 'onyx', storage.openaiKey);
+        const speaker1Audio = await generateSpeechAudio(conversationScript.speaker1Lines, 'alloy');
+        const speaker2Audio = await generateSpeechAudio(conversationScript.speaker2Lines, 'onyx');
         
         // Pass the original script to combineAudioTracks
         const finalAudio = await combineAudioTracks(speaker1Audio, speaker2Audio, conversationScript);
@@ -653,33 +675,12 @@ async function generateConversationScript(articles) {
     return parseConversationScript(data.choices[0].message.content);
 }
 
-async function generateSpeechAudio(textLines, voice, apiKey) {
+async function generateSpeechAudio(textLines, voice) {
     console.log(`Generating audio for ${textLines.length} lines with voice '${voice}'`);
 
-    // Generate audio for each line separately
+    // Generate audio for each line separately using generateAudio
     const audioPromises = textLines.map(async (line) => {
-        const response = await fetch('https://api.openai.com/v1/audio/speech', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${apiKey}`
-            },
-            body: JSON.stringify({
-                model: 'tts-1',
-                input: {
-                    text: line
-                },
-                voice: voice // Include the voice parameter in the request body
-            })
-        });
-
-        if (!response.ok) {
-            const errorText = await response.text();
-            console.error('Error response:', errorText);
-            throw new Error('Failed to generate audio: ' + response.statusText);
-        }
-
-        return await response.blob();
+        return await generateAudio(line, voice); // Call generateAudio for each line
     });
 
     // Wait for all audio generations to complete
@@ -888,21 +889,10 @@ async function getAudioFile(id) {
             audioRequest.onsuccess = (event) => {
                 const audioFile = event.target.result; // Get the result from the event
                 if (!audioFile) {
-                    reject(new Error(`No audio file found with ID: ${id}`));
+                    resolve(null); // Return null if no audio file found
                 } else {
                     console.log("Retrieved audioFile ID:", id);
-                    console.log("Retrieved audioFile properties:", audioFile); // Log the entire audioFile object
-
-                    // Access the audioBlob correctly
-                    const audioBlob = audioFile.audioBlob; // Accessing the audioBlob directly
-                    if (audioBlob) {
-                        console.log("Retrieved audioBlob properties:");
-                        console.log("Size:", audioBlob.size); // Size in bytes
-                        console.log("Type:", audioBlob.type); // MIME type
-                        resolve(audioBlob); // Resolve the promise with the audioBlob
-                    } else {
-                        reject(new Error("AudioBlob is undefined or null."));
-                    }
+                    resolve(audioFile.audioBlob); // Resolve with the audioBlob
                 }
             };
 
