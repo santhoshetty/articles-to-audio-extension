@@ -287,16 +287,6 @@ document.addEventListener("DOMContentLoaded", async () => {
         container.appendChild(articleElement);
     }
 
-    // Generate Audio button handler
-    document.getElementById('generateAudioBtn').addEventListener('click', () => {
-        console.log('Selected Articles:', selectedArticles);
-        if (selectedArticles.size === 0) {
-            alert('Please select at least one article to generate a podcast.');
-            return;
-        }
-        generateAudioForSelected(storage.articles);
-    });
-
     // Generate Podcast button handler
     document.getElementById('generatePodcast').addEventListener('click', async () => {
         await generatePodcast(); // Call the refactored generatePodcast function
@@ -318,54 +308,6 @@ function toggleArticleSelection(articleId, checkbox) {
 // Utility function to delay execution
 function delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-// Function to generate audio for selected articles
-async function generateAudioForSelected(articles) {
-    const storage = await chrome.storage.local.get(['openaiKey', 'huggingfaceKey']);
-    if (!storage.openaiKey || !storage.huggingfaceKey) {
-        alert('API keys not found. Please set them in the extension settings.');
-        return;
-    }
-
-    const audioPromises = Array.from(selectedArticles).map(async (articleId, index) => {
-        const article = articles[articleId];
-        const audioContainer = document.getElementById(`audio-container-${articleId}`);
-
-        try {
-            // Show loading state
-            audioContainer.innerHTML = '<div>Generating summary and audio...</div>';
-
-            // 1. Generate summary using OpenAI with retry logic
-            const summary = await retryAsync(() => generateSummary(article.text), 3);
-
-            // 2. Generate audio using HuggingFace with retry logic
-            const audioUrl = await retryAsync(() => generateAudio(summary, storage.huggingfaceKey, index), 3);
-
-            // 3. Create summary and audio display
-            const contentDiv = document.createElement('div');
-            contentDiv.innerHTML = `
-                <div style="margin: 10px 0; padding: 10px; background: #f5f5f5; border-radius: 4px;">
-                    <strong>Summary:</strong> ${summary}
-                </div>
-                <audio controls style="width: 100%; margin-top: 10px;">
-                    <source src="${audioUrl}" type="audio/wav">
-                    Your browser does not support the audio element.
-                </audio>
-            `;
-
-            // Clear previous content and add new elements
-            audioContainer.innerHTML = '';
-            audioContainer.appendChild(contentDiv);
-
-        } catch (error) {
-            console.error('Error generating summary or audio:', error);
-            audioContainer.innerHTML = `<div style="color: red;">Error: ${error.message}</div>`;
-        }
-    });
-
-    // Wait for all audio generation promises to complete
-    await Promise.all(audioPromises);
 }
 
 // Retry logic for API calls
