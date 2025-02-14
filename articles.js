@@ -299,104 +299,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     // Generate Podcast button handler
     document.getElementById('generatePodcast').addEventListener('click', async () => {
-        const selectedArticles = document.querySelectorAll('.article-checkbox:checked');
-        if (selectedArticles.length === 0) {
-            alert('Please select at least one article to generate a podcast.');
-            return;
-        }
-
-        // Show loading icon
-        const loadingIcon = document.getElementById('loadingIcon');
-        if (loadingIcon) {
-            loadingIcon.style.display = 'inline';
-        }
-
-        try {
-            const articles = Array.from(selectedArticles).map(checkbox => {
-                const articleDiv = checkbox.closest('.article');
-                return {
-                    title: articleDiv.querySelector('.article-title').textContent,
-                    content: articleDiv.querySelector('.article-content').textContent,
-                    summary: articleDiv.querySelector('.article-summary')?.textContent // Assuming you have a summary element
-                };
-            });
-
-            const articleTitles = articles.map(article => article.title).sort().join(', '); // Sort titles for consistency
-            console.log('Selected articles:', articleTitles); // Log the titles of the selected articles
-
-            // Create a unique podcast ID based on the article titles
-            const podcastId = `podcast-${btoa(encodeURIComponent(articleTitles))}`; // Encode the titles for a unique ID
-
-            // Check if the podcast already exists in IndexedDB
-            const existingPodcast = await getAudioFile(podcastId);
-            if (existingPodcast) {
-                console.log(`Podcast already exists with ID: ${podcastId}`);
-                alert(`Playing existing podcast for: ${articleTitles}`);
-                const podcastAudio = new Audio(URL.createObjectURL(existingPodcast));
-                podcastAudio.play();
-                return; // Exit if podcast already exists
-            }
-
-            // Prepare articles data for conversation script
-            const conversationData = articles.map(article => ({
-                text: article.content,
-                summary: article.summary || '', // Use existing summary or an empty string if it doesn't exist
-                title: article.title
-            }));
-
-            const conversationScript = await generateConversationScript(conversationData);
-            
-            // Log metadata for the selected articles
-            console.log(`Generating podcast for: ${articleTitles}`);
-            alert(`Generating podcast for: ${articleTitles}`); // Frontend log
-
-            // Generate audio for both speakers
-            const speaker1Audio = await generateSpeechAudio(conversationScript.speaker1Lines, 'alloy', storage.openaiKey);
-            const speaker2Audio = await generateSpeechAudio(conversationScript.speaker2Lines, 'onyx', storage.openaiKey);
-            
-            // Pass the original script to combineAudioTracks
-            const finalAudio = await combineAudioTracks(speaker1Audio, speaker2Audio, conversationScript);
-
-            // Save the podcast in IndexedDB with metadata
-            await saveAudioFile(podcastId, finalAudio); // Save the podcast audio
-            console.log(`Podcast saved with ID: ${podcastId}`); // Log the podcast ID
-
-            // Create play/pause button for the podcast
-            const playPauseBtn = document.createElement('button');
-            playPauseBtn.className = 'play-pause-podcast-btn';
-            playPauseBtn.textContent = '▶️'; // Play symbol
-
-            // Create podcast container if it doesn't exist
-            let podcastContainer = document.getElementById('podcast-container');
-            if (!podcastContainer) {
-                podcastContainer = document.createElement('div');
-                podcastContainer.id = 'podcast-container'; // Set the ID for the new container
-                document.body.appendChild(podcastContainer); // Append it to the body or a specific parent element
-            }
-
-            podcastContainer.appendChild(playPauseBtn); // Append to the podcast container
-
-            // Add click handler for the play/pause button
-            let podcastAudio = new Audio(URL.createObjectURL(finalAudio));
-            playPauseBtn.addEventListener('click', () => {
-                if (podcastAudio.paused) {
-                    podcastAudio.play();
-                    playPauseBtn.textContent = '⏸️'; // Pause symbol
-                } else {
-                    podcastAudio.pause();
-                    playPauseBtn.textContent = '▶️'; // Play symbol
-                }
-            });
-
-        } catch (error) {
-            console.error('Error generating podcast:', error);
-            alert('Failed to generate podcast. Please try again.');
-        } finally {
-            // Hide loading icon
-            if (loadingIcon) {
-                loadingIcon.style.display = 'none';
-            }
-        }
+        await generatePodcast(); // Call the refactored generatePodcast function
     });
 });
 
@@ -593,6 +496,12 @@ async function generatePodcast() {
         return;
     }
 
+    // Show loading icon
+    const loadingIcon = document.getElementById('loadingIcon');
+    if (loadingIcon) {
+        loadingIcon.style.display = 'inline';
+    }
+
     try {
         const articles = Array.from(selectedArticles).map(checkbox => {
             const articleDiv = checkbox.closest('.article');
@@ -603,36 +512,81 @@ async function generatePodcast() {
             };
         });
 
-        // // Generate summaries for articles without them
-        // for (const article of articles) {
-        //     console.log(article.title)
-        //     console.log(article.summary)
-        //     if (!article.summary || article.summary.trim() === '') { // Check if summary is empty
-        //         console.log('Generating summary for article:', article.title); // Log the article title
-        //         article.summary = await generateSummary(article.content); // Call the refactored function
-        //     }
-        // }
+        const articleTitles = articles.map(article => article.title).sort().join(', '); // Sort titles for consistency
+        console.log('Selected articles:', articleTitles); // Log the titles of the selected articles
 
-        // Create conversation script
+        // Create a unique podcast ID based on the article titles
+        const podcastId = `podcast-${btoa(encodeURIComponent(articleTitles))}`; // Encode the titles for a unique ID
+
+        // Check if the podcast already exists in IndexedDB
+        const existingPodcast = await getAudioFile(podcastId);
+        if (existingPodcast) {
+            console.log(`Podcast already exists with ID: ${podcastId}`);
+            alert(`Playing existing podcast for: ${articleTitles}`);
+            const podcastAudio = new Audio(URL.createObjectURL(existingPodcast));
+            podcastAudio.play();
+            return; // Exit if podcast already exists
+        }
+
+        // Prepare articles data for conversation script
         const conversationData = articles.map(article => ({
-            text: article.text,
+            text: article.content,
             summary: article.summary || '', // Use existing summary or an empty string if it doesn't exist
             title: article.title
         }));
 
         const conversationScript = await generateConversationScript(conversationData);
         
+        // Log metadata for the selected articles
+        console.log(`Generating podcast for: ${articleTitles}`);
+        alert(`Generating podcast for: ${articleTitles}`); // Frontend log
+
         // Generate audio for both speakers
         const speaker1Audio = await generateSpeechAudio(conversationScript.speaker1Lines, 'alloy');
         const speaker2Audio = await generateSpeechAudio(conversationScript.speaker2Lines, 'onyx');
         
         // Pass the original script to combineAudioTracks
         const finalAudio = await combineAudioTracks(speaker1Audio, speaker2Audio, conversationScript);
-        playPodcast(finalAudio);
+
+        // Save the podcast in IndexedDB with metadata
+        await saveAudioFile(podcastId, finalAudio); // Save the podcast audio
+        console.log(`Podcast saved with ID: ${podcastId}`); // Log the podcast ID
+
+        // Create play/pause button for the podcast
+        const playPauseBtn = document.createElement('button');
+        playPauseBtn.className = 'play-pause-podcast-btn';
+        playPauseBtn.textContent = '▶️'; // Play symbol
+
+        // Create podcast container if it doesn't exist
+        let podcastContainer = document.getElementById('podcast-container');
+        if (!podcastContainer) {
+            podcastContainer = document.createElement('div');
+            podcastContainer.id = 'podcast-container'; // Set the ID for the new container
+            document.body.appendChild(podcastContainer); // Append it to the body or a specific parent element
+        }
+
+        podcastContainer.appendChild(playPauseBtn); // Append to the podcast container
+
+        // Add click handler for the play/pause button
+        let podcastAudio = new Audio(URL.createObjectURL(finalAudio));
+        playPauseBtn.addEventListener('click', () => {
+            if (podcastAudio.paused) {
+                podcastAudio.play();
+                playPauseBtn.textContent = '⏸️'; // Pause symbol
+            } else {
+                podcastAudio.pause();
+                playPauseBtn.textContent = '▶️'; // Play symbol
+            }
+        });
 
     } catch (error) {
         console.error('Error generating podcast:', error);
         alert('Failed to generate podcast. Please try again.');
+    } finally {
+        // Hide loading icon
+        if (loadingIcon) {
+            loadingIcon.style.display = 'none';
+        }
     }
 }
 
