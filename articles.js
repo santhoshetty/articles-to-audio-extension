@@ -325,7 +325,7 @@ document.addEventListener("DOMContentLoaded", async () => {
             console.log('Selected articles:', articleTitles); // Log the titles of the selected articles
 
             // Create a unique podcast ID based on the article titles
-            const podcastId = `podcast-${btoa(articleTitles)}`; // Base64 encode the titles for a unique ID
+            const podcastId = `podcast-${btoa(encodeURIComponent(articleTitles))}`; // Encode the titles for a unique ID
 
             // Check if the podcast already exists in IndexedDB
             const existingPodcast = await getAudioFile(podcastId);
