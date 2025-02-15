@@ -1,18 +1,14 @@
 document.addEventListener('DOMContentLoaded', async () => {
     // Load saved API keys
-    const storage = await chrome.storage.local.get(['openaiKey', 'huggingfaceKey']);
+    const storage = await chrome.storage.local.get(['openaiKey']);
     if (storage.openaiKey) {
         document.getElementById('openaiKey').value = storage.openaiKey;
-    }
-    if (storage.huggingfaceKey) {
-        document.getElementById('huggingfaceKey').value = storage.huggingfaceKey;
     }
 
     document.getElementById('saveBtn').addEventListener('click', async () => {
         const openaiKey = document.getElementById('openaiKey').value.trim();
-        const huggingfaceKey = document.getElementById('huggingfaceKey').value.trim();
 
-        if (!openaiKey || !huggingfaceKey) {
+        if (!openaiKey) {
             showStatus('Please enter both API keys', 'error');
             return;
         }
@@ -21,7 +17,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             // Save both API keys
             await chrome.storage.local.set({ 
                 openaiKey: openaiKey,
-                huggingfaceKey: huggingfaceKey
             });
             showStatus('API keys saved successfully!', 'success');
         } catch (error) {
