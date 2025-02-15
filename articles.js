@@ -300,19 +300,11 @@ document.addEventListener("DOMContentLoaded", async () => {
 
     // Generate Podcast button handler
     document.getElementById('generatePodcast').addEventListener('click', async () => {
-        const startDate = new Date(document.getElementById('startDate').value);
-        const endDate = new Date(document.getElementById('endDate').value);
         const selectedArticles = document.querySelectorAll('.article-checkbox:checked');
 
-        // Filter selected articles based on date range
-        const filteredArticles = Array.from(selectedArticles).filter(checkbox => {
-            const articleDiv = checkbox.closest('.article');
-            const articleDate = new Date(articleDiv.querySelector('.article-date').textContent.replace('Saved on ', ''));
-            return articleDate >= startDate && articleDate <= endDate;
-        });
-
-        if (filteredArticles.length === 0) {
-            alert('Please select at least one article within the specified date range to generate a podcast.');
+        // Check if at least one article is selected
+        if (selectedArticles.length === 0) {
+            alert('Please select at least one article to generate a podcast.');
             return;
         }
 
@@ -323,7 +315,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         }
 
         try {
-            const articles = filteredArticles.map(checkbox => {
+            const articles = Array.from(selectedArticles).map(checkbox => {
                 const articleDiv = checkbox.closest('.article');
                 return {
                     title: articleDiv.querySelector('.article-title').textContent,
@@ -368,8 +360,8 @@ document.addEventListener("DOMContentLoaded", async () => {
             // Pass the original script to combineAudioTracks
             const finalAudio = await combineAudioTracks(speaker1Audio, speaker2Audio, conversationScript);
 
-            // Save the podcast in IndexedDB with metadata
-            await saveAudioFile(podcastId, finalAudio); // Save the podcast audio
+            // Save the podcast in IndexedDB with metadata and titles
+            await savePodcastWithTitles(podcastId, finalAudio, articles); // Save the podcast audio with titles
             console.log(`Podcast saved with ID: ${podcastId}`); // Log the podcast ID
 
             // Create play/pause button for the podcast
@@ -443,6 +435,20 @@ document.addEventListener("DOMContentLoaded", async () => {
     // Attach event listeners to filter articles when dates change
     startDateInput.addEventListener('change', filterArticlesByDate);
     endDateInput.addEventListener('change', filterArticlesByDate);
+
+    // Add event listener for the All Podcasts button
+    document.getElementById('allPodcasts').addEventListener('click', async () => {
+        const podcastTable = document.getElementById('podcast-table');
+        const podcastList = document.getElementById('podcast-list');
+
+        // Toggle visibility of the podcast table
+        if (podcastTable.style.display === 'none') {
+            podcastTable.style.display = 'block';
+            await loadPodcasts(podcastList); // Load podcasts when opening the table
+        } else {
+            podcastTable.style.display = 'none';
+        }
+    });
 });
 
 function toggleArticleSelection(articleId, checkbox) {
@@ -848,4 +854,95 @@ async function getAudioFile(id) {
             };
         }).catch(reject); // Handle any errors opening the database
     });
+}
+
+// Function to load podcasts and populate the table
+async function loadPodcasts(podcastList) {
+    podcastList.innerHTML = ''; // Clear existing entries
+
+    // Retrieve all podcasts from IndexedDB
+    const podcasts = await getAllPodcasts(); // Fetch podcasts
+
+    podcasts.forEach(podcast => {
+        const row = document.createElement('tr');
+
+        // Create a variable to hold the audio instance
+        let podcastAudio = new Audio(URL.createObjectURL(podcast.audioBlob));
+
+        // Create play/pause button for each podcast
+        const playPauseBtn = document.createElement('button');
+        playPauseBtn.textContent = '▶️'; // Play symbol
+
+        // Add click event listener for play/pause button
+        playPauseBtn.addEventListener('click', () => {
+            if (podcastAudio.paused) {
+                podcastAudio.play();
+                playPauseBtn.textContent = '⏸️'; // Change to pause symbol
+            } else {
+                podcastAudio.pause();
+                playPauseBtn.textContent = '▶️'; // Change to play symbol
+            }
+        });
+
+        // Create cell for the play/pause button
+        const podcastCell = document.createElement('td');
+        podcastCell.appendChild(playPauseBtn);
+        row.appendChild(podcastCell);
+
+        // Create cell for the article titles
+        const titlesCell = document.createElement('td');
+        // Check if titles is defined and is an array
+        if (Array.isArray(podcast.titles)) {
+            titlesCell.textContent = podcast.titles.join(', '); // Join titles if it's an array
+        } else {
+            titlesCell.textContent = 'No titles available'; // Fallback message
+        }
+        row.appendChild(titlesCell);
+
+        podcastList.appendChild(row);
+    });
+}
+
+// Function to get all podcasts from IndexedDB
+async function getAllPodcasts() {
+    const db = await openDb();
+    const tx = db.transaction("audioFiles", "readonly");
+    const store = tx.objectStore("audioFiles");
+
+    return new Promise((resolve, reject) => {
+        const allPodcastsRequest = store.getAll(); // Get all podcasts
+
+        allPodcastsRequest.onsuccess = (event) => {
+            const allPodcasts = event.target.result; // Access the result from the event
+            // Check if allPodcasts is an array
+            if (!Array.isArray(allPodcasts)) {
+                console.error('Expected an array but got:', allPodcasts);
+                resolve([]); // Return an empty array if the data is not as expected
+            } else {
+                resolve(allPodcasts.map(podcast => ({
+                    id: podcast.id,
+                    audioBlob: podcast.audioBlob,
+                    titles: podcast.titles // Assuming titles are stored in the podcast object
+                })));
+            }
+        };
+
+        allPodcastsRequest.onerror = (event) => {
+            console.error('Failed to retrieve podcasts:', event.target.error);
+            reject(new Error('Failed to retrieve podcasts from IndexedDB.'));
+        };
+    });
+}
+
+// Function to save podcast audio and titles in IndexedDB
+async function savePodcastWithTitles(id, audioBlob, articles) {
+    const titles = articles.map(article => article.title); // Extract titles from articles
+    await saveAudioFile(id, audioBlob); // Save the audio file
+    const db = await openDb();
+    const tx = db.transaction("audioFiles", "readwrite");
+    const store = tx.objectStore("audioFiles");
+
+    // Save the titles along with the audio blob
+    await store.put({ id, audioBlob, titles }); // Ensure the structure is correct
+    return tx.complete;
 }
