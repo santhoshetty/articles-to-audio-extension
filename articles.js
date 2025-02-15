@@ -101,101 +101,6 @@ document.addEventListener("DOMContentLoaded", async () => {
             <div class="article-summary" id="summary-${index}"></div>
         `;
 
-        // Check if the audio field is non-empty
-        if (article.audio) {
-            // Create Play Audio button
-            const playBtn = document.createElement('button');
-            playBtn.className = 'play-btn';
-            playBtn.textContent = 'Play Audio';
-            mainContent.appendChild(playBtn);
-
-            // Create Play/Pause button (initially hidden)
-            const playPauseBtn = document.createElement('button');
-            playPauseBtn.className = 'play-pause-btn';
-            playPauseBtn.textContent = '▶️'; // Play symbol
-            playPauseBtn.style.display = 'none'; // Initially hidden
-            mainContent.appendChild(playPauseBtn);
-
-            let audio; // Variable to hold the audio instance
-
-            // Add click handler for the Play button
-            playBtn.addEventListener('click', async () => {
-                try {
-                    const audioBlob = await getAudioFile(article.audio); // Function to retrieve audio from IndexedDB
-                    console.log("Retrieved audioBlob:", audioBlob); // Log the audioBlob for debugging
-
-                    if (!audioBlob) {
-                        throw new Error("Audio blob is undefined or null.");
-                    }
-
-                    const audioUrl = URL.createObjectURL(audioBlob); // Create a URL for the audio file
-                    audio = new Audio(audioUrl);
-
-                    // Show the Play/Pause button
-                    playPauseBtn.style.display = 'inline';
-
-                    // Add click handler for the Play/Pause button
-                    playPauseBtn.addEventListener('click', () => {
-                        if (audio.paused) {
-                            audio.play();
-                            playPauseBtn.textContent = '⏸️'; // Pause symbol
-                        } else {
-                            audio.pause();
-                            playPauseBtn.textContent = '▶️'; // Play symbol
-                        }
-                    });
-
-                    // Reset button text when audio ends
-                    audio.addEventListener('ended', () => {
-                        playPauseBtn.textContent = '▶️'; // Reset to Play symbol when audio ends
-                        playPauseBtn.style.display = 'none'; // Hide the button when audio ends
-                    });
-
-                    audio.play(); // Start playing audio immediately
-                } catch (error) {
-                    console.error('Error playing audio:', error);
-                    alert('Failed to play audio. Please try again.');
-                }
-            });
-        } else {
-            // Create Generate Audio button
-            const generateAudioBtn = document.createElement('button');
-            generateAudioBtn.className = 'generate-audio-btn';
-            generateAudioBtn.textContent = 'Generate Audio';
-            mainContent.appendChild(generateAudioBtn);
-
-            // Add click handler for the Generate Audio button
-            generateAudioBtn.addEventListener('click', async () => {
-                const audioBlob = await generateAudio(article.summary, defaultVoice, index);
-                const audioUrl = URL.createObjectURL(audioBlob); // Create URL from blob
-
-                // Remove the Generate Audio button and replace with Play button
-                generateAudioBtn.remove();
-
-                // Create Play button
-                const playBtn = document.createElement('button');
-                playBtn.className = 'play-btn';
-                playBtn.textContent = 'Play Audio';
-                mainContent.appendChild(playBtn);
-
-                // Add click handler for the Play button
-                playBtn.addEventListener('click', () => {
-                    const audio = new Audio(audioUrl);
-                    audio.play();
-                });
-
-                // Save audio to IndexedDB and update article's audio field
-                const audioId = `audio-${Date.now()}`; // Unique ID for the audio
-                await saveAudioFile(audioId, audioBlob); // Save audio file in IndexedDB
-
-                // Update local storage with audio reference
-                const storage = await chrome.storage.local.get(['articles']);
-                const articles = storage.articles || [];
-                articles[index].audio = audioId; // Store the audio ID in the article
-                await chrome.storage.local.set({ articles }); // Update storage
-            });
-        }
-
         // Add click handler for the Generate/Re-generate Summary button
         const generateSummaryBtn = mainContent.querySelector('.generate-summary-btn');
         generateSummaryBtn.addEventListener('click', async () => {
@@ -888,6 +793,26 @@ async function loadPodcasts(podcastList) {
         const podcastCell = document.createElement('td');
         podcastCell.appendChild(playPauseBtn);
         row.appendChild(podcastCell);
+
+        // Create delete button (bin symbol)
+        const deleteBtn = document.createElement('button');
+        deleteBtn.innerHTML = '🗑️'; // Bin symbol
+        deleteBtn.addEventListener('click', async () => {
+            // Delete podcast from IndexedDB
+            const db = await openDb();
+            const tx = db.transaction("audioFiles", "readwrite");
+            const store = tx.objectStore("audioFiles");
+            await store.delete(podcast.id); // Delete the podcast by ID
+            await tx.complete;
+
+            // Remove the row from the table
+            podcastList.removeChild(row);
+        });
+
+        // Create cell for the delete button
+        const deleteCell = document.createElement('td');
+        deleteCell.appendChild(deleteBtn);
+        row.appendChild(deleteCell);
 
         // Create cell for the article titles
         const titlesCell = document.createElement('td');
