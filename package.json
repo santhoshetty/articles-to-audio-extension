@@ -1,0 +1,14 @@
+{
+  "name": "article-to-audio",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "node build.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.3"
+  },
+  "devDependencies": {
+    "esbuild": "^0.20.0"
+  }
+}
