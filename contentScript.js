@@ -37,6 +37,13 @@ async function extractArticle() {
         let iframeTexts = [];
         document.querySelectorAll('iframe').forEach(iframe => {
             try {
+                // Skip known cross-origin iframes
+                const src = iframe.getAttribute('src');
+                if (src && src.includes("disqus.com")) {
+                    console.warn("Skipping Disqus iframe due to cross-origin restrictions.");
+                    return; // Skip this iframe
+                }
+
                 const doc = iframe.contentDocument || iframe.contentWindow.document;
                 if (doc) {
                     // Try specific selectors first
@@ -78,10 +85,13 @@ async function extractArticle() {
         const element = document.querySelector(selector);
         if (element) {
             mainContent = getTextFromElement(element);
+            console.log(`Found content using selector: ${selector}, Content Length: ${mainContent.length}`);
             if (mainContent.length > 100) { // Found substantial content
-                console.log(`Found content using selector: ${selector}`);
+                console.log(`Valid content found: ${mainContent.slice(0, 200)}...`);
                 break;
             }
+        } else {
+            console.log(`No content found for selector: ${selector}`);
         }
     }
 
@@ -89,6 +99,7 @@ async function extractArticle() {
     if (!mainContent || mainContent.length < 100) {
         console.log("Checking iframes for content...");
         mainContent = getTextFromIframes();
+        console.log(`Iframes content length: ${mainContent.length}`);
     }
 
     if (!mainContent.trim()) {

@@ -19,6 +19,8 @@
   - Configure Google as an authentication provider in Supabase.
   - Set up redirect URLs and client secrets.
 
+I have finished everything until here. Lets build User Management and Session Management. Implement correct logs to track the flow of the code.
+
 - **User Management:**
   - Use Supabase's built-in authentication methods to handle user sign-ups and logins.
   - Implement session management to keep users logged in.

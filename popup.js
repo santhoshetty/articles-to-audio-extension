@@ -1,16 +1,11 @@
 // popup.js
 
 // Import the Supabase client
-import { createClient } from '@supabase/supabase-js';
-
-// Initialize Supabase client
-const supabaseUrl = 'https://vrsbermuilpkvjdnnhtf.supabase.co'; // Replace with your Supabase URL
-const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZyc2Jlcm11aWxwa3ZqZG5uaHRmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Mzk2MDIwMDIsImV4cCI6MjA1NTE3ODAwMn0.VzGpAOUX-M147mIeEBcWAp_P3eABS1QnDzmN4Yn-I_k'; // Replace with your Supabase public anon key
-const supabase = createClient(supabaseUrl, supabaseKey);
+import supabase from './supabaseClient';
 
 // Function to sign in with Google
 async function signInWithGoogle() {
-    console.log('signInWithGoogle function called');
+    console.log('Starting Google sign-in process...');
     try {
         console.log('Starting Google sign-in process...');
         
@@ -102,6 +97,16 @@ async function signInWithGoogle() {
             session: sessionData.session 
         });
         console.log('Stored session in chrome.storage.local');
+
+        // After successful sign in, update UI
+        const session = await checkSession();
+        if (session) {
+            updateUIForAuthState(true, session.user.email);
+            showStatus('Successfully signed in', 'success');
+        }
+
+        // Call handleUserLogin with the user data
+        await handleUserLogin(sessionData.user);
     } catch (error) {
         console.error('Detailed error in sign in process:', error);
         console.error('Error stack:', error.stack);
@@ -120,43 +125,111 @@ function showStatus(message, type) {
     }, 3000);
 }
 
-async function summarizeText(text) {
-    // Get API key from storage
-    const storage = await chrome.storage.local.get(['openaiKey']);
-    if (!storage.openaiKey) {
-        throw new Error("OpenAI API key not found. Please set it in the extension options.");
+// Session management functions
+async function checkSession() {
+    console.log('Checking current session status...');
+    const { data: { session }, error } = await supabase.auth.getSession();
+    
+    if (error) {
+        console.error('Error checking session:', error.message);
+        return null;
     }
-
-    try {
-        const response = await fetch('https://api.openai.com/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${storage.openaiKey}`  // Use key from storage
-            },
-            body: JSON.stringify({
-                model: 'gpt-3.5-turbo',
-                messages: [{
-                    role: 'system',
-                    content: 'Summarize the following article in a concise way:'
-                }, {
-                    role: 'user',
-                    content: text
-                }],
-                max_tokens: 300
-            })
+    
+    if (session) {
+        console.log('Active session found:', {
+            user: session.user.email,
+            expires_at: session.expires_at
         });
+        return session;
+    }
+    
+    console.log('No active session found');
+    return null;
+}
+
+async function refreshSession() {
+    console.log('Attempting to refresh session...');
+    const { data: { session }, error } = await supabase.auth.refreshSession();
+    
+    if (error) {
+        console.error('Session refresh failed:', error.message);
+        return null;
+    }
+    
+    if (session) {
+        console.log('Session refreshed successfully:', {
+            user: session.user.email,
+            new_expires_at: new Date(session.expires_at).toLocaleString()
+        });
+        return session;
+    }
+    
+    console.log('No session to refresh');
+    return null;
+}
+
+async function handleSignOut() {
+    console.log('Initiating sign out process...');
+    const { error } = await supabase.auth.signOut();
+    
+    if (error) {
+        console.error('Sign out failed:', error.message);
+        showStatus('Failed to sign out', 'error');
+        return;
+    }
+    
+    console.log('User signed out successfully');
+    showStatus('Signed out successfully', 'success');
+    updateUIForAuthState(false);
+}
+
+function updateUIForAuthState(isAuthenticated, userEmail = null) {
+    console.log('Updating UI for auth state:', { isAuthenticated, userEmail });
+    
+    const signInButton = document.getElementById('sign-in-button');
+    const saveArticleBtn = document.getElementById('saveArticleBtn');
+    const showArticlesBtn = document.getElementById('showArticlesBtn');
+    
+    if (isAuthenticated) {
+        signInButton.textContent = `Sign out (${userEmail})`;
+        signInButton.removeEventListener('click', signInWithGoogle);
+        signInButton.addEventListener('click', handleSignOut);
         
-        const data = await response.json();
-        return data.choices[0].message.content;
-    } catch (error) {
-        console.error('Summarization failed:', error);
-        throw error;
+        saveArticleBtn.disabled = false;
+        showArticlesBtn.disabled = false;
+    } else {
+        signInButton.textContent = 'Sign in with Google';
+        signInButton.removeEventListener('click', handleSignOut);
+        signInButton.addEventListener('click', signInWithGoogle);
+        
+        saveArticleBtn.disabled = true;
+        showArticlesBtn.disabled = true;
     }
 }
 
+// Initialize the extension
 document.addEventListener('DOMContentLoaded', async () => {
-    console.log('DOMContentLoaded event fired');
+    console.log('Extension popup opened, initializing...');
+    
+    // Check for existing session
+    const session = await checkSession();
+    if (session) {
+        console.log('Found existing session, updating UI...');
+        updateUIForAuthState(true, session.user.email);
+        
+        // Set up session refresh
+        const timeToExpiry = new Date(session.expires_at) - new Date();
+        if (timeToExpiry > 0) {
+            console.log(`Session expires in ${Math.round(timeToExpiry/1000/60)} minutes`);
+            setTimeout(refreshSession, timeToExpiry - (5 * 60 * 1000)); // Refresh 5 minutes before expiry
+        } else {
+            console.log('Session expired, attempting refresh...');
+            await refreshSession();
+        }
+    } else {
+        console.log('No existing session found, showing sign-in UI');
+        updateUIForAuthState(false);
+    }
     
     const saveArticleBtn = document.getElementById('saveArticleBtn');
     const showArticlesBtn = document.getElementById('showArticlesBtn');
@@ -213,6 +286,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
 
                 // 4. Save the article
+                const session = await checkSession(); // Check if the user is authenticated
+                if (!session) {
+                    showStatus("You must be signed in to save an article.", "error");
+                    return; // Exit the function if not authenticated
+                }
+
                 const response = await chrome.runtime.sendMessage({
                     action: "SAVE_ARTICLE",
                     payload: {
@@ -222,9 +301,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                     }
                 });
 
+                console.log("Response from background script:", response);
+
                 if (response?.success) {
                     showStatus("Article saved successfully!", "success");
                 } else {
+                    console.error("Error details:", response);
                     showStatus("Failed to save the article.", "error");
                 }
             } catch (error) {
@@ -246,13 +328,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
-    if (signInButton) {
-        signInButton.addEventListener('click', () => {
-            console.log('Sign in button clicked');
-            signInWithGoogle();
-        });
-    }
-
     if (optionsLink) {
         optionsLink.addEventListener('click', (e) => {
             console.log('Options link clicked');
@@ -269,3 +344,31 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
     }
 });
+
+async function handleUserLogin(userData) {
+    // Define the session duration (e.g., 1 hour)
+    const sessionDuration = 60 * 60 * 1000; // 1 hour in milliseconds
+
+    // Create the session object with numeric timestamp for consistency
+    const currentSession = {
+        user: userData.email,
+        expires_at: Date.now() + sessionDuration // Store as timestamp
+    };
+
+    // Store the session in chrome.storage
+    await chrome.storage.local.set({ currentSession });
+
+    // Notify background script of session update
+    await chrome.runtime.sendMessage({
+        type: 'AUTH_STATE_CHANGED',
+        payload: {
+            event: 'SIGNED_IN',
+            session: currentSession
+        }
+    });
+
+    console.log("User logged in. Session created:", {
+        user: currentSession.user,
+        expires_at: new Date(currentSession.expires_at).toISOString()
+    });
+}
