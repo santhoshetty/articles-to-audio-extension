@@ -346,29 +346,28 @@ document.addEventListener('DOMContentLoaded', async () => {
 });
 
 async function handleUserLogin(userData) {
-    // Define the session duration (e.g., 1 hour)
-    const sessionDuration = 60 * 60 * 1000; // 1 hour in milliseconds
+    try {
+        // Notify background script of successful login
+        const { data: { session } } = await supabase.auth.getSession();
+        
+        const response = await chrome.runtime.sendMessage({
+            type: 'AUTH_STATE_CHANGED',
+            payload: {
+                event: 'SIGNED_IN',
+                session
+            }
+        });
 
-    // Create the session object with numeric timestamp for consistency
-    const currentSession = {
-        user: userData.email,
-        expires_at: Date.now() + sessionDuration // Store as timestamp
-    };
-
-    // Store the session in chrome.storage
-    await chrome.storage.local.set({ currentSession });
-
-    // Notify background script of session update
-    await chrome.runtime.sendMessage({
-        type: 'AUTH_STATE_CHANGED',
-        payload: {
-            event: 'SIGNED_IN',
-            session: currentSession
+        if (!response?.success) {
+            console.error('Failed to update background script session state');
         }
-    });
 
-    console.log("User logged in. Session created:", {
-        user: currentSession.user,
-        expires_at: new Date(currentSession.expires_at).toISOString()
-    });
+        console.log("User logged in. Supabase session active:", {
+            user: userData.email,
+            expires_at: session.expires_at
+        });
+    } catch (error) {
+        console.error('Error handling user login:', error);
+        throw error;
+    }
 }
