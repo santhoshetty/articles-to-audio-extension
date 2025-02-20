@@ -33,7 +33,7 @@
         "128": "icons/icon128.png"
     },
     "background": {
-        "service_worker": "background.js"
+        "service_worker": "dist/background.bundle.js"
     },
     "content_scripts": [
         {
@@ -41,7 +41,7 @@
                 "<all_urls>"
             ],
             "js": [
-                "contentScript.js"
+                "dist/contentScript.bundle.js"
             ],
             "all_frames": true,
             "match_about_blank": true,

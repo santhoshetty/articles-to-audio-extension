@@ -1,4 +1,94 @@
-// articles.js
+import supabase from './supabaseClient';
+
+let currentSession = null;
+
+// Session management
+async function initializeSession() {
+    console.log('Articles page: Initializing session...');
+    
+    // First try to get session from background
+    const response = await chrome.runtime.sendMessage({ action: "GET_SESSION" });
+    if (response?.session) {
+        console.log('Articles page: Got session from background');
+        currentSession = response.session;
+        return;
+    }
+    
+    // If no session in background, check Supabase directly
+    const { data: { session }, error } = await supabase.auth.getSession();
+    
+    if (error) {
+        console.error('Articles page: Error getting session:', error.message);
+        return;
+    }
+    
+    if (session) {
+        console.log('Articles page: Session found:', {
+            user: session.user.email,
+            expires_at: new Date(session.expires_at).toLocaleString()
+        });
+        currentSession = session;
+    } else {
+        console.log('Articles page: No session found');
+        currentSession = null;
+        // Redirect to popup for authentication
+        window.close();
+    }
+}
+
+// Listen for auth state changes from background
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message.type === 'AUTH_STATE_CHANGED') {
+        console.log('Articles page: Auth state changed:', message.payload.event);
+        currentSession = message.payload.session;
+        
+        if (!currentSession) {
+            console.log('Articles page: No session, closing window');
+            window.close();
+        } else {
+            console.log('Articles page: New session, refreshing content');
+            loadArticles();
+        }
+    }
+});
+
+// Enhanced article loading with authentication
+async function loadArticles() {
+    console.log('Articles page: Loading articles...');
+    
+    if (!currentSession) {
+        console.error('Articles page: Attempting to load articles without authentication');
+        return;
+    }
+    
+    try {
+        const { data: articles, error } = await supabase
+            .from('articles')
+            .select('*')
+            .eq('user_id', currentSession.user.id)
+            .order('created_at', { ascending: false });
+            
+        if (error) {
+            console.error('Articles page: Error loading articles:', error.message);
+            return;
+        }
+        
+        console.log(`Articles page: Loaded ${articles.length} articles`);
+        displayArticles(articles);
+    } catch (error) {
+        console.error('Articles page: Error in loadArticles:', error);
+    }
+}
+
+// Initialize the page
+document.addEventListener('DOMContentLoaded', async () => {
+    console.log('Articles page: Initializing...');
+    await initializeSession();
+    
+    if (currentSession) {
+        await loadArticles();
+    }
+});
 
 let allArticles = [];
 let selectedArticles = new Set();
