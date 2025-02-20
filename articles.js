@@ -6,32 +6,38 @@ let currentSession = null;
 async function initializeSession() {
     console.log('Articles page: Initializing session...');
     
-    // First try to get session from background
-    const response = await chrome.runtime.sendMessage({ action: "GET_SESSION" });
-    if (response?.session) {
-        console.log('Articles page: Got session from background');
-        currentSession = response.session;
-        return;
-    }
-    
-    // If no session in background, check Supabase directly
-    const { data: { session }, error } = await supabase.auth.getSession();
-    
-    if (error) {
-        console.error('Articles page: Error getting session:', error.message);
-        return;
-    }
-    
-    if (session) {
-        console.log('Articles page: Session found:', {
-            user: session.user.email,
-            expires_at: new Date(session.expires_at).toLocaleString()
-        });
-        currentSession = session;
-    } else {
-        console.log('Articles page: No session found');
-        currentSession = null;
-        // Redirect to popup for authentication
+    try {
+        // First try to get session from background
+        const response = await chrome.runtime.sendMessage({ action: "GET_SESSION" });
+        if (response?.session) {
+            console.log('Articles page: Got session from background:', response.session);
+            currentSession = response.session;
+            return;
+        }
+        
+        // If no session in background, check Supabase directly
+        const { data: { session }, error } = await supabase.auth.getSession();
+        
+        if (error) {
+            console.error('Articles page: Error getting session:', error.message);
+            throw error;
+        }
+        
+        if (session) {
+            console.log('Articles page: Session found:', {
+                user: session.user.email,
+                expires_at: new Date(session.expires_at).toLocaleString()
+            });
+            currentSession = session;
+        } else {
+            console.log('Articles page: No session found');
+            currentSession = null;
+            // Redirect to popup for authentication
+            window.close();
+        }
+    } catch (error) {
+        console.error('Articles page: Error in initializeSession:', error);
+        console.error('Error stack:', error.stack);
         window.close();
     }
 }
@@ -58,10 +64,14 @@ async function loadArticles() {
     
     if (!currentSession) {
         console.error('Articles page: Attempting to load articles without authentication');
+        const container = document.getElementById('articles-container');
+        container.innerHTML = '<div class="no-articles">Please sign in to view your articles.</div>';
         return;
     }
     
     try {
+        console.log('Articles page: Current session user:', currentSession.user.id);
+        
         const { data: articles, error } = await supabase
             .from('articles')
             .select('*')
@@ -70,13 +80,36 @@ async function loadArticles() {
             
         if (error) {
             console.error('Articles page: Error loading articles:', error.message);
+            console.error('Full error:', error);
+            const container = document.getElementById('articles-container');
+            container.innerHTML = '<div class="no-articles">Error loading articles. Please try again.</div>';
             return;
         }
         
-        console.log(`Articles page: Loaded ${articles.length} articles`);
-        displayArticles(articles);
+        if (!articles || articles.length === 0) {
+            console.log('Articles page: No articles found for user');
+            const container = document.getElementById('articles-container');
+            container.innerHTML = '<div class="no-articles">No saved articles yet.</div>';
+            return;
+        }
+        
+        console.log(`Articles page: Loaded ${articles.length} articles:`, articles);
+        
+        // Map database fields to display fields
+        const mappedArticles = articles.map(article => ({
+            id: article.id,
+            title: article.title,
+            content: article.content || article.text, // Handle both content and text fields
+            created_at: article.created_at,
+            summary: article.summary
+        }));
+        
+        displayArticles(mappedArticles);
     } catch (error) {
         console.error('Articles page: Error in loadArticles:', error);
+        console.error('Error stack:', error.stack);
+        const container = document.getElementById('articles-container');
+        container.innerHTML = '<div class="no-articles">Error loading articles. Please try again.</div>';
     }
 }
 
@@ -87,6 +120,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     
     if (currentSession) {
         await loadArticles();
+    } else {
+        console.log('No active session found, cannot load articles.');
     }
 });
 
@@ -960,4 +995,122 @@ async function savePodcastWithTitles(id, audioBlob, articles) {
     // Save the titles along with the audio blob
     await store.put({ id, audioBlob, titles }); // Ensure the structure is correct
     return tx.complete;
+}
+
+// Function to display articles
+function displayArticles(articles) {
+    console.log('Articles page: Displaying articles:', articles);
+    const container = document.getElementById('articles-container');
+    container.innerHTML = ''; // Clear existing content
+
+    if (!articles || articles.length === 0) {
+        container.innerHTML = '<div class="no-articles">No saved articles yet.</div>';
+        return;
+    }
+
+    // Add Select All checkbox
+    const selectAllContainer = document.createElement('div');
+    selectAllContainer.className = 'select-all-container';
+    selectAllContainer.innerHTML = `
+        <label class="checkbox-container">
+            <input type="checkbox" id="selectAllCheckbox">
+            <span class="checkbox-label">Select All Articles</span>
+        </label>
+    `;
+    container.appendChild(selectAllContainer);
+
+    // Display each article
+    articles.forEach((article, index) => {
+        const articleElement = document.createElement('div');
+        articleElement.className = 'article';
+
+        const date = new Date(article.created_at).toLocaleDateString('en-US', {
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit'
+        });
+
+        // Create main article content
+        const mainContent = document.createElement('div');
+        mainContent.className = 'article-main';
+
+        const articleTitle = article.title || 'Untitled Article';
+
+        mainContent.innerHTML = `
+            <h2 class="article-title">${articleTitle}</h2>
+            <div class="article-date">Saved on ${date}</div>
+            <div class="article-content" id="content-${index}">
+                ${article.content}
+            </div>
+            <button class="expand-btn" data-index="${index}">Show More</button>
+            <button class="generate-summary-btn" data-index="${index}">${article.summary ? 'Re-generate Summary' : 'Generate Summary'}</button>
+            <div class="article-summary" id="summary-${index}">${article.summary ? `<strong>Summary:</strong> ${article.summary}` : ''}</div>
+        `;
+
+        // Add click handler for expand button
+        const expandBtn = mainContent.querySelector('.expand-btn');
+        expandBtn.addEventListener('click', function() {
+            const contentId = this.getAttribute('data-index');
+            const content = document.getElementById(`content-${contentId}`);
+
+            if (content.classList.contains('expanded')) {
+                content.classList.remove('expanded');
+                this.textContent = 'Show More';
+                content.scrollTop = 0;
+            } else {
+                content.classList.add('expanded');
+                this.textContent = 'Show Less';
+            }
+        });
+
+        // Create controls section
+        const controls = document.createElement('div');
+        controls.className = 'article-controls';
+
+        // Add checkbox for podcast selection
+        const checkboxContainer = document.createElement('label');
+        checkboxContainer.className = 'checkbox-container';
+        checkboxContainer.innerHTML = `
+            <input type="checkbox" class="select-article article-checkbox" data-article-id="${article.id}">
+            <span class="checkbox-label">Select for Podcast</span>
+        `;
+
+        controls.appendChild(checkboxContainer);
+
+        // Add audio player container
+        const audioContainer = document.createElement('div');
+        audioContainer.id = `audio-container-${index}`;
+        controls.appendChild(audioContainer);
+
+        // Add delete button
+        const deleteBtn = document.createElement('button');
+        deleteBtn.className = 'delete-btn';
+        deleteBtn.innerHTML = '🗑️';
+        deleteBtn.addEventListener('click', async () => {
+            try {
+                const { error } = await supabase
+                    .from('articles')
+                    .delete()
+                    .eq('id', article.id);
+
+                if (error) throw error;
+                
+                container.removeChild(articleElement);
+                if (container.children.length === 0) {
+                    container.innerHTML = '<div class="no-articles">No saved articles yet.</div>';
+                }
+            } catch (error) {
+                console.error('Error deleting article:', error);
+                alert('Failed to delete article. Please try again.');
+            }
+        });
+
+        controls.appendChild(deleteBtn);
+
+        articleElement.appendChild(mainContent);
+        articleElement.appendChild(controls);
+        container.appendChild(articleElement);
+    });
 }
