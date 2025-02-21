@@ -5,112 +5,41 @@ import supabase from './supabaseClient';
 
 // Function to sign in with Google
 async function signInWithGoogle() {
-    console.log('Starting Google sign-in process...');
+    console.log('Popup: Starting Google sign-in process...');
     try {
-        console.log('Starting Google sign-in process...');
+        // Disable the sign-in button and show loading state
+        const signInButton = document.getElementById('sign-in-button');
+        signInButton.disabled = true;
+        signInButton.textContent = 'Signing in...';
         
-        // Get the extension ID and redirect URL
-        const extensionId = chrome.runtime.id;
-        const redirectUrl = chrome.identity.getRedirectURL();
-        console.log('Extension ID:', extensionId);
-        console.log('Redirect URL:', redirectUrl);
-
-        // Initialize Supabase OAuth
-        console.log('Initializing Supabase OAuth...');
-        const { data, error } = await supabase.auth.signInWithOAuth({
-            provider: 'google',
-            options: {
-                redirectTo: redirectUrl,
-                skipBrowserRedirect: true,
-                queryParams: {
-                    access_type: 'offline',
-                    prompt: 'consent'
-                }
-            }
-        });
-
-        if (error) {
-            console.error('Supabase OAuth initialization error:', error);
-            showStatus('Failed to initiate sign in', 'error');
-            return;
-        }
-
-        // Get the authorization URL from Supabase's response
-        const authURL = data.url;
-        console.log('Got auth URL from Supabase:', authURL);
+        // Set auth in progress flag
+        await chrome.storage.local.set({ auth_in_progress: true });
         
-        // Use Chrome's identity API to handle the OAuth flow
-        console.log('Launching web auth flow...');
-        const responseUrl = await new Promise((resolve, reject) => {
-            chrome.identity.launchWebAuthFlow({
-                url: authURL,
-                interactive: true
-            }, (redirectUrl) => {
-                if (chrome.runtime.lastError) {
-                    console.error('Chrome web auth flow error:', chrome.runtime.lastError);
-                    reject(chrome.runtime.lastError);
-                    return;
-                }
-                console.log('Got redirect URL:', redirectUrl);
-                resolve(redirectUrl);
-            });
-        });
-
-        if (!responseUrl) {
-            console.error('No response URL received from auth flow');
-            throw new Error('No response URL received');
+        // Delegate sign-in to background script
+        const response = await chrome.runtime.sendMessage({ action: "GOOGLE_SIGN_IN" });
+        console.log('Popup: Received sign-in response:', response);
+        
+        if (!response || !response.success) {
+            throw new Error(response?.error || 'Failed to sign in');
         }
-
-        console.log('Parsing response URL:', responseUrl);
-        // Extract the access_token and refresh_token from the URL
-        const url = new URL(responseUrl);
-        const params = new URLSearchParams(url.hash.substring(1));
-        const access_token = params.get('access_token');
-        const refresh_token = params.get('refresh_token');
-
-        console.log('Access token present:', !!access_token);
-        console.log('Refresh token present:', !!refresh_token);
-
-        if (!access_token) {
-            console.error('No access token in response URL');
-            throw new Error('No access token received');
-        }
-
-        // Set the session in Supabase
-        console.log('Setting Supabase session...');
-        const { data: sessionData, error: sessionError } = await supabase.auth.setSession({
-            access_token,
-            refresh_token
-        });
-
-        if (sessionError) {
-            console.error('Error setting Supabase session:', sessionError);
-            showStatus('Failed to complete sign in', 'error');
-            return;
-        }
-
-        console.log('Successfully set Supabase session:', sessionData);
+        
+        console.log('Popup: Sign-in successful');
+        
+        // Update UI with the new session
+        updateUIForAuthState(true, response.session.user.email);
         showStatus('Successfully signed in with Google', 'success');
         
-        // Store the session
-        await chrome.storage.local.set({ 
-            session: sessionData.session 
-        });
-        console.log('Stored session in chrome.storage.local');
-
-        // After successful sign in, update UI
-        const session = await checkSession();
-        if (session) {
-            updateUIForAuthState(true, session.user.email);
-            showStatus('Successfully signed in', 'success');
-        }
-
-        // Call handleUserLogin with the user data
-        await handleUserLogin(sessionData.user);
     } catch (error) {
-        console.error('Detailed error in sign in process:', error);
-        console.error('Error stack:', error.stack);
-        showStatus('An error occurred during sign in', 'error');
+        console.error('Popup: Error in sign-in process:', error);
+        showStatus(error.message || 'Failed to sign in', 'error');
+        updateUIForAuthState(false);
+    } finally {
+        // Clear auth in progress flag
+        await chrome.storage.local.remove('auth_in_progress');
+        // Re-enable the sign-in button and restore text
+        const signInButton = document.getElementById('sign-in-button');
+        signInButton.disabled = false;
+        signInButton.textContent = 'Sign in with Google';
     }
 }
 
@@ -211,23 +140,46 @@ function updateUIForAuthState(isAuthenticated, userEmail = null) {
 document.addEventListener('DOMContentLoaded', async () => {
     console.log('Extension popup opened, initializing...');
     
-    // Check for existing session
-    const session = await checkSession();
-    if (session) {
-        console.log('Found existing session, updating UI...');
-        updateUIForAuthState(true, session.user.email);
+    try {
+        // First check if we have a session in chrome.storage.local
+        const storedSession = await chrome.storage.local.get('supabase.auth.token');
+        let session = storedSession['supabase.auth.token'];
         
-        // Set up session refresh
-        const timeToExpiry = new Date(session.expires_at) - new Date();
-        if (timeToExpiry > 0) {
-            console.log(`Session expires in ${Math.round(timeToExpiry/1000/60)} minutes`);
-            setTimeout(refreshSession, timeToExpiry - (5 * 60 * 1000)); // Refresh 5 minutes before expiry
-        } else {
-            console.log('Session expired, attempting refresh...');
-            await refreshSession();
+        if (!session) {
+            // If no stored session, check with background script
+            const response = await chrome.runtime.sendMessage({ action: "GET_SESSION" });
+            session = response.session;
         }
-    } else {
-        console.log('No existing session found, showing sign-in UI');
+        
+        if (session) {
+            console.log('Found existing session, updating UI...');
+            updateUIForAuthState(true, session.user.email);
+            
+            // Verify the session is still valid
+            const now = new Date().getTime();
+            const expiresAt = new Date(session.expires_at).getTime();
+            
+            if (now >= expiresAt) {
+                console.log('Session expired, attempting refresh...');
+                const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
+                
+                if (!refreshError && refreshData.session) {
+                    session = refreshData.session;
+                    await chrome.storage.local.set({
+                        'supabase.auth.token': session
+                    });
+                    updateUIForAuthState(true, session.user.email);
+                } else {
+                    console.log('Session refresh failed, showing sign-in UI');
+                    updateUIForAuthState(false);
+                }
+            }
+        } else {
+            console.log('No existing session found, showing sign-in UI');
+            updateUIForAuthState(false);
+        }
+    } catch (error) {
+        console.error('Error during popup initialization:', error);
         updateUIForAuthState(false);
     }
     
