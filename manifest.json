@@ -17,6 +17,13 @@
         "https://vrsbermuilpkvjdnnhtf.supabase.co/*",
         "https://accounts.google.com/*"
     ],
+    "oauth2": {
+        "client_id": "1042881101572-s58kuc2slr99pojdop9quegkqi87nb0i.apps.googleusercontent.com",
+        "scopes": [
+            "https://www.googleapis.com/auth/userinfo.email",
+            "https://www.googleapis.com/auth/userinfo.profile"
+        ]
+    },
     "action": {
         "default_popup": "popup.html",
         "default_icon": {
