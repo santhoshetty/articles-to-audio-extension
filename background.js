@@ -127,43 +127,33 @@ async function handleSaveArticle(articleData) {
             date: articleData.date
         });
 
-        // Ensure we have a valid session with user information
-        if (!currentSession?.user?.id) {
-            throw new Error('No valid user session found');
+        // Get the latest session
+        const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+        
+        if (sessionError || !session) {
+            console.error('Session error:', sessionError);
+            throw new Error('No valid session found');
         }
 
-        // Debug log for user ID
+        // Update current session
+        currentSession = session;
+
+        // Debug log for user ID and session details
         console.log('Current user session details:', {
-            user_id: currentSession.user.id,
-            email: currentSession.user.email
+            user_id: session.user.id,
+            email: session.user.email,
+            session_expires_at: session.expires_at,
+            access_token: session.access_token ? 'Present' : 'Missing'
         });
 
-        // First, ensure user exists in the users table
-        const { error: upsertError } = await supabase
-            .from('users')
-            .upsert([
-                {
-                    id: currentSession.user.id,
-                    email: currentSession.user.email,
-                    created_at: new Date().toISOString()
-                }
-            ], {
-                onConflict: 'id'
-            });
-
-        if (upsertError) {
-            console.error('Error upserting user record:', upsertError);
-            throw new Error('Failed to create/update user record');
-        }
-
-        // Now insert the article
+        // Insert the article with detailed error logging
         const { data, error } = await supabase
             .from('articles')
             .insert([
                 {
                     title: articleData.title,
                     content: articleData.text,
-                    user_id: currentSession.user.id,
+                    user_id: session.user.id,
                     created_at: articleData.date
                 }
             ])
@@ -171,14 +161,21 @@ async function handleSaveArticle(articleData) {
             .single();
 
         if (error) {
-            console.error('Supabase error while saving article:', error);
-            throw new Error('Failed to save article to database');
+            console.error('Supabase error details:', {
+                code: error.code,
+                message: error.message,
+                details: error.details,
+                hint: error.hint,
+                status: error.status
+            });
+            throw new Error(`Failed to save article to database: ${error.message}`);
         }
 
         console.log('Article saved successfully to Supabase:', {
             article_id: data.id,
             title: data.title,
-            created_at: data.created_at
+            created_at: data.created_at,
+            user_id: data.user_id
         });
 
         // Return success with the saved article data
@@ -188,6 +185,8 @@ async function handleSaveArticle(articleData) {
         };
     } catch (error) {
         console.error('Error in handleSaveArticle:', error);
-        throw error;
+        // Include more context in the error message
+        const errorMessage = error.message || 'Unknown error occurred';
+        throw new Error(`Failed to save article: ${errorMessage}`);
     }
 }
