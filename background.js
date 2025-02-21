@@ -328,6 +328,50 @@ async function handleGoogleSignIn() {
             throw sessionError;
         }
 
+        // Get user data
+        const { data: { user }, error: userError } = await supabase.auth.getUser();
+        
+        if (userError) {
+            console.error('Error getting user data:', userError);
+            throw userError;
+        }
+
+        if (!user) {
+            throw new Error('No user data received');
+        }
+
+        console.log('Got user data:', user);
+
+        try {
+            // Try to insert the user into the users table
+            const { error: insertError } = await supabase
+                .from('users')
+                .insert([
+                    {
+                        id: user.id,
+                        email: user.email,
+                        created_at: new Date().toISOString()
+                    }
+                ])
+                .single();
+
+            if (insertError) {
+                // If error is not a duplicate key violation, then it's a real error
+                if (!insertError.message.includes('duplicate key')) {
+                    console.error('Error inserting user:', insertError);
+                    throw insertError;
+                }
+                // If it's a duplicate key error, that's fine - the user already exists
+                console.log('User already exists in users table');
+            } else {
+                console.log('Successfully created new user in users table');
+            }
+        } catch (dbError) {
+            console.error('Database operation failed:', dbError);
+            // Don't throw here - we want to continue with the sign-in process
+            // even if the users table operation fails
+        }
+
         // Store session
         currentSession = sessionData.session;
         await chrome.storage.local.set({
