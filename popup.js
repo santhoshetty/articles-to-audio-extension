@@ -335,14 +335,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             chrome.runtime.openOptionsPage();
         });
     }
-
-    // Check if API key exists
-    const storage = await chrome.storage.local.get(['openaiKey']);
-    if (!storage.openaiKey) {
-        alert('Please set your OpenAI API key in the extension settings first.');
-        chrome.runtime.openOptionsPage();
-        return;
-    }
 });
 
 async function handleUserLogin(userData) {

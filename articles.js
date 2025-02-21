@@ -2,6 +2,18 @@ import supabase from './supabaseClient';
 
 let currentSession = null;
 
+// Initialize the page
+document.addEventListener('DOMContentLoaded', async () => {
+    console.log('Articles page: Initializing...');
+    await initializeSession();
+    
+    if (currentSession) {
+        await loadArticles();
+    } else {
+        console.log('No active session found, cannot load articles.');
+    }
+});
+
 // Session management
 async function initializeSession() {
     console.log('Articles page: Initializing session...');
@@ -113,34 +125,17 @@ async function loadArticles() {
     }
 }
 
-// Initialize the page
-document.addEventListener('DOMContentLoaded', async () => {
-    console.log('Articles page: Initializing...');
-    await initializeSession();
-    
-    if (currentSession) {
-        await loadArticles();
-    } else {
-        console.log('No active session found, cannot load articles.');
-    }
-});
-
 let allArticles = [];
 let selectedArticles = new Set();
 
 document.addEventListener("DOMContentLoaded", async () => {
     const container = document.getElementById('articles-container');
 
-    // Get saved articles and API key
-    const storage = await chrome.storage.local.get(['articles', 'openaiKey']);
+    // Get saved articles
+    const storage = await chrome.storage.local.get(['articles']);
 
     if (!storage.articles || storage.articles.length === 0) {
         container.innerHTML = '<div class="no-articles">No saved articles yet.</div>';
-        return;
-    }
-
-    if (!storage.openaiKey) {
-        alert('OpenAI API key not found. Please set it in the extension settings.');
         return;
     }
 
@@ -208,7 +203,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         // Generate title using OpenAI only if it doesn't exist
         if (!existingTitle) {
             try {
-                const generatedTitle = await generateTitle(article.text, storage.openaiKey);
+                const generatedTitle = await generateTitle(article.text);
                 articleTitle = generatedTitle || 'Untitled Article';
             } catch (error) {
                 console.error('Error generating title:', error);
@@ -228,18 +223,67 @@ document.addEventListener("DOMContentLoaded", async () => {
 
         // Add click handler for the Generate/Re-generate Summary button
         const generateSummaryBtn = mainContent.querySelector('.generate-summary-btn');
+        console.log('Adding click handler to summary button:', generateSummaryBtn);
         generateSummaryBtn.addEventListener('click', async () => {
+            console.log('Summary button clicked!');
             try {
-                const summary = await generateSummary(article.text);
-                const summaryElement = mainContent.querySelector(`.article-summary#summary-${index}`);
-                summaryElement.innerHTML = `<strong>Summary:</strong> ${summary}`;
+                if (!currentSession) {
+                    console.error('No active session found');
+                    throw new Error('Please sign in to generate summaries');
+                }
 
-                // Update the summary in the storage
-                storage.articles[index].summary = summary; // Update summary in the array
-                await chrome.storage.local.set({ articles: storage.articles }); // Save updated articles
+                console.log('Starting summary generation for article:', {
+                    title: articleTitle,
+                    textLength: article.content?.length || article.text?.length || 0,
+                    hasContent: !!article.content,
+                    hasText: !!article.text,
+                    articleData: article
+                });
+
+                if (!article.content && !article.text) {
+                    throw new Error('No article text found to generate summary');
+                }
+
+                // Show loading state
+                generateSummaryBtn.disabled = true;
+                generateSummaryBtn.textContent = 'Generating...';
+                
+                const summary = await generateSummary(article.content || article.text);
+                console.log('Summary generated successfully:', {
+                    summaryLength: summary.length,
+                    summary: summary.substring(0, 100) + '...' // Log first 100 chars
+                });
+
+                const summaryElement = mainContent.querySelector(`.article-summary#summary-${index}`);
+                summaryElement.style.display = 'block';
+                summaryElement.innerHTML = `<strong>Summary:</strong> ${summary}`;
+                
+                // Update the summary in storage
+                article.summary = summary;
+                
+                // Update in Supabase if we have an article ID
+                if (article.id) {
+                    console.log('Saving summary to database for article:', article.id);
+                    const { error } = await supabase
+                        .from('articles')
+                        .update({ summary })
+                        .eq('id', article.id);
+                        
+                    if (error) {
+                        console.error('Error saving summary to database:', error);
+                        throw error;
+                    }
+                    console.log('Summary saved to database successfully');
+                }
+
+                // Update button text to show success
+                generateSummaryBtn.textContent = 'Re-generate Summary';
             } catch (error) {
-                console.error('Error generating summary:', error);
-                alert('Failed to generate summary. Please try again.');
+                console.error('Error in summary generation:', error);
+                alert('Failed to generate summary: ' + error.message);
+                generateSummaryBtn.textContent = 'Generate Summary';
+            } finally {
+                generateSummaryBtn.disabled = false;
             }
         });
 
@@ -515,147 +559,74 @@ async function retryAsync(fn, retries) {
 }
 
 async function generateSummary(text) {
-    const apiKey = await getOpenAIKey(); // Retrieve the API key
+    try {
+        const { data, error } = await supabase.functions.invoke('generate-summary', {
+            body: { text }
+        });
 
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${apiKey}`
-        },
-        body: JSON.stringify({
-            model: 'gpt-3.5-turbo',
-            messages: [
-                {
-                    role: 'system',
-                    content: 'Summarize the following article concisely while maintaining key details, \
-                    covering the main topic, essential facts, important arguments, and any conclusions. \
-                    Highlight the who, what, when, where, why, and how (if applicable). Retain the \
-                    original tone—whether informative, analytical, or opinion-based—and include any \
-                    significant statistics, quotes, or expert opinions mentioned. Ensure clarity, \
-                    coherence, and neutrality (unless it is an opinion piece, in which case, reflect \
-                    the stance of the author accurately). If there are action points or takeaways, include \
-                    them in bullet points.'
-                },
-                {
-                    role: 'user',
-                    content: text
-                }
-            ],
-            max_tokens: 500
-        })
-    });
+        if (error) {
+            throw error;
+        }
 
-    if (!response.ok) {
-        throw new Error('Failed to generate summary');
+        return data.summary;
+    } catch (error) {
+        console.error('Error generating summary:', error);
+        throw error;
     }
-
-    const data = await response.json();
-    return data.choices[0].message.content.trim();
 }
 
 async function generateAudio(text, voice = "alloy") {
-    const apiKey = await getOpenAIKey(); // Retrieve the OpenAI API key
+    try {
+        const { data, error } = await supabase.functions.invoke('generate-audio', {
+            body: { text, voice }
+        });
 
-    console.log("Using API Key:", apiKey);
-    console.log("Text to convert:", text);
-    console.log("Voice selected:", voice);
+        if (error) {
+            throw error;
+        }
 
-    const response = await fetch("https://api.openai.com/v1/audio/speech", {
-        method: "POST",
-        headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${apiKey}`
-        },
-        body: JSON.stringify({
-            model: "tts-1",
-            input: text,
-            voice: voice
-        })
-    });
-
-    console.log("Response Status:", response.status);
-
-    if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`❌ Error generating audio: ${errorText}`);
+        // Convert base64 to blob
+        const audioBlob = await fetch(`data:audio/mp3;base64,${data.audio}`).then(res => res.blob());
+        console.log("✅ Audio generated successfully!");
+        return audioBlob;
+    } catch (error) {
+        console.error('Error generating audio:', error);
+        throw error;
     }
-
-    const audioBlob = await response.blob();
-    console.log("✅ Audio generated successfully!");
-
-    return audioBlob; // Return the audio blob for further processing
 }
 
-async function generateTitle(text, apiKey) {
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${apiKey}`
-        },
-        body: JSON.stringify({
-            model: 'gpt-3.5-turbo',
-            messages: [
-                {
-                    role: 'system',
-                    content: 'Generate a concise, engaging title (maximum 10 words) for this article. Return only the title without quotes or additional text.'
-                },
-                {
-                    role: 'user',
-                    content: text
-                }
-            ],
-            max_tokens: 50,
-            temperature: 0.7
-        })
-    });
+async function generateTitle(text) {
+    try {
+        const { data, error } = await supabase.functions.invoke('generate-title', {
+            body: { text }
+        });
 
-    if (!response.ok) {
-        throw new Error('Failed to generate title');
+        if (error) {
+            throw error;
+        }
+
+        return data.title;
+    } catch (error) {
+        console.error('Error generating title:', error);
+        throw error;
     }
-
-    const data = await response.json();
-    return data.choices[0].message.content.trim();
 }
 
 async function generateConversationScript(articles) {
-    const apiKey = await getOpenAIKey();
+    try {
+        const { data, error } = await supabase.functions.invoke('generate-conversation', {
+            body: { articles }
+        });
 
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${apiKey}`
-        },
-        body: JSON.stringify({
-            model: "gpt-4",
-            messages: [{
-                role: "system",
-                content: `Create a concise 3-4 minute conversation between two hosts discussing these articles. 
-                Key requirements:
-                - Keep each speaker's line under 20 words
-                - Maximum 6-8 exchanges total
-                - Focus only on the most important points
-                - Make it engaging but brief
-                - Use natural, conversational language
-                
-                Format:
-                Host1: [Speaker 1's brief dialogue]
-                Host2: [Speaker 2's brief dialogue]
-                
-                Ensure each line starts with either "Host1:" or "Host2:"`
-            }, {
-                role: "user",
-                content: JSON.stringify(articles)
-            }],
-            temperature: 0.7, // Add some variety but keep it focused
-            max_tokens: 500  // Limit the response length
-        })
-    });
+        if (error) {
+            throw error;
+        }
 
-    const data = await response.json();
-    return parseConversationScript(data.choices[0].message.content);
+        return parseConversationScript(data.conversation);
+    } catch (error) {
+        console.error('Error generating conversation script:', error);
+        throw error;
+    }
 }
 
 async function generateSpeechAudio(textLines, voice) {
@@ -789,18 +760,6 @@ async function playPodcast(audioBlob) {
 
     const audio = new Audio(URL.createObjectURL(audioBlob));
     audio.play();
-}
-
-async function getOpenAIKey() {
-    return new Promise((resolve, reject) => {
-        chrome.storage.local.get(['openaiKey'], (result) => {
-            if (result.openaiKey) {
-                resolve(result.openaiKey);
-            } else {
-                reject(new Error('API key not found'));
-            }
-        });
-    });
 }
 
 // Function to parse the conversation script
@@ -1048,6 +1007,69 @@ function displayArticles(articles) {
             <button class="generate-summary-btn" data-index="${index}">${article.summary ? 'Re-generate Summary' : 'Generate Summary'}</button>
             <div class="article-summary" id="summary-${index}">${article.summary ? `<strong>Summary:</strong> ${article.summary}` : ''}</div>
         `;
+
+        // Add click handler for the Generate/Re-generate Summary button
+        const generateSummaryBtn = mainContent.querySelector('.generate-summary-btn');
+        console.log('Adding click handler to summary button:', generateSummaryBtn);
+        generateSummaryBtn.addEventListener('click', async () => {
+            console.log('Summary button clicked!');
+            try {
+                if (!currentSession) {
+                    console.error('No active session found');
+                    throw new Error('Please sign in to generate summaries');
+                }
+
+                console.log('Starting summary generation for article:', {
+                    title: articleTitle,
+                    textLength: article.content?.length || 0,
+                    hasContent: !!article.content,
+                    articleData: article
+                });
+
+                if (!article.content) {
+                    throw new Error('No article text found to generate summary');
+                }
+
+                // Show loading state
+                generateSummaryBtn.disabled = true;
+                generateSummaryBtn.textContent = 'Generating...';
+                
+                const summary = await generateSummary(article.content);
+                console.log('Summary generated successfully:', {
+                    summaryLength: summary.length,
+                    summary: summary.substring(0, 100) + '...' // Log first 100 chars
+                });
+
+                const summaryElement = mainContent.querySelector(`.article-summary#summary-${index}`);
+                summaryElement.style.display = 'block';
+                summaryElement.innerHTML = `<strong>Summary:</strong> ${summary}`;
+                
+                // Update the summary in storage
+                article.summary = summary;
+                
+                // Update in Supabase
+                console.log('Saving summary to database for article:', article.id);
+                const { error } = await supabase
+                    .from('articles')
+                    .update({ summary })
+                    .eq('id', article.id);
+                    
+                if (error) {
+                    console.error('Error saving summary to database:', error);
+                    throw error;
+                }
+                console.log('Summary saved to database successfully');
+
+                // Update button text to show success
+                generateSummaryBtn.textContent = 'Re-generate Summary';
+            } catch (error) {
+                console.error('Error in summary generation:', error);
+                alert('Failed to generate summary: ' + error.message);
+                generateSummaryBtn.textContent = 'Generate Summary';
+            } finally {
+                generateSummaryBtn.disabled = false;
+            }
+        });
 
         // Add click handler for expand button
         const expandBtn = mainContent.querySelector('.expand-btn');

@@ -12,12 +12,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 });
 
 async function extractArticle() {
-    // Get API key from storage
-    const storage = await chrome.storage.local.get(['openaiKey']);
-    if (!storage.openaiKey) {
-        throw new Error("OpenAI API key not found. Please set it in the extension options.");
-    }
-
     /**
      * Extract text from element, removing unwanted elements
      */
