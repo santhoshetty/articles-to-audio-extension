@@ -10,6 +10,7 @@
             max-width: 1000px;
             margin: 0 auto;
             padding: 20px;
+            padding-bottom: 120px;
         }
 
         .article {
@@ -209,9 +210,13 @@
         }
 
         .button-container {
+            position: fixed;
+            bottom: 100px;
+            right: 20px;
             display: flex;
-            justify-content: space-between;
-            align-items: center;
+            flex-direction: column;
+            gap: 10px;
+            z-index: 1001;
         }
 
         .action-button {
@@ -357,11 +362,10 @@
 
     <div id="articles-container"></div>
 
-    <div class="button-container"
-        style="position: fixed; bottom: 20px; right: 20px; display: flex; flex-direction: column; gap: 10px;">
-        <button id="allPodcasts" class="action-button" style="width: 100%;">All Podcasts</button>
+    <div class="button-container">
+        <button id="allPodcasts" class="action-button">All Podcasts</button>
         <div style="display: flex; align-items: center; gap: 10px;">
-            <button id="generatePodcast" class="action-button" style="width: 100%;">Generate Podcast</button>
+            <button id="generatePodcast" class="action-button">Generate Podcast</button>
             <div id="loadingIcon" style="display: none;">
                 <img src="icons/loading.gif" alt="Loading..." style="width: 24px; height: 24px;">
             </div>
