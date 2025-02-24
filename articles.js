@@ -42,20 +42,34 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         try {
             const articles = Array.from(selectedArticles).map(checkbox => {
-                const articleDiv = checkbox.closest('.article');
                 const articleId = checkbox.dataset.articleId;
-                console.log('Processing article:', { id: articleId });
+                const articleDiv = checkbox.closest('.article');
+                
+                if (!articleDiv) {
+                    console.error('Could not find article div for checkbox:', articleId);
+                    throw new Error('Failed to process selected article');
+                }
+
+                const title = articleDiv.querySelector('.article-title')?.textContent || 'Untitled';
+                const content = articleDiv.querySelector('.article-content')?.textContent || '';
+                const summary = articleDiv.querySelector('.article-summary')?.textContent || '';
+
+                console.log('Processing article:', { 
+                    id: articleId,
+                    title: title,
+                    contentLength: content.length,
+                    summaryLength: summary.length
+                });
+
                 return {
                     id: articleId,
-                    title: articleDiv.querySelector('.article-title').textContent,
-                    content: articleDiv.querySelector('.article-content').textContent,
-                    summary: articleDiv.querySelector('.article-summary')?.textContent
+                    title: title,
+                    content: content,
+                    summary: summary
                 };
             });
 
-            const articleIds = articles.map(article => article.id);
-            const articleTitles = articles.map(article => article.title).sort().join(', ');
-            console.log('Selected articles:', articleTitles);
+            console.log('Selected articles:', articles.map(a => a.title).join(', '));
 
             // Call Supabase edge function to generate podcast
             console.log('Calling generate-podcast edge function with articles:', JSON.stringify(articles, null, 2));
@@ -66,6 +80,26 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (podcastError) {
                 throw new Error(`Failed to generate podcast: ${podcastError.message}`);
             }
+
+            console.log('Podcast generated successfully:', podcastData);
+
+            // Extract the file path from the audio_url
+            const audioUrlPath = new URL(podcastData.audio_url).pathname;
+            const fileName = audioUrlPath.split('/').pop(); // Get the last part of the path (filename)
+            
+            // Get the signed URL for the audio file
+            const { data: signedUrlData, error: signedUrlError } = await supabase
+                .storage
+                .from('audio-files')
+                .createSignedUrl(`public/${fileName}`, 604800); // 7 days expiry
+
+            if (signedUrlError) {
+                console.error('Failed to get signed URL:', signedUrlError);
+                throw new Error(`Failed to get signed URL: ${signedUrlError.message}`);
+            }
+
+            const audioUrl = signedUrlData.signedUrl;
+            console.log('Got signed URL for audio:', audioUrl);
 
             // Create or get the bottom audio player container
             let bottomAudioContainer = document.getElementById('bottom-audio-player');
@@ -86,7 +120,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     <audio 
                         class="podcast-audio" 
                         controls 
-                        src="${podcastData.audio_url}"
+                        src="${audioUrl}"
                         preload="metadata"
                     >
                         Your browser does not support the audio element.
@@ -1118,66 +1152,6 @@ async function displayArticles(articles) {
             <div class="article-summary" id="summary-${index}">${article.summary ? `<strong>Summary:</strong> ${article.summary}` : ''}</div>
         `;
 
-        // Add click handler for the Generate/Re-generate Summary button
-        const generateSummaryBtn = mainContent.querySelector('.generate-summary-btn');
-        generateSummaryBtn.addEventListener('click', async () => {
-            console.log('Summary button clicked!');
-            try {
-                if (!currentSession) {
-                    console.error('No active session found');
-                    throw new Error('Please sign in to generate summaries');
-                }
-
-                generateSummaryBtn.disabled = true;
-                generateSummaryBtn.textContent = 'Generating...';
-                
-                const summary = await generateSummary(article.content);
-                const summaryElement = mainContent.querySelector(`.article-summary#summary-${index}`);
-                summaryElement.style.display = 'block';
-                summaryElement.innerHTML = `<strong>Summary:</strong> ${summary}`;
-                
-                // Update the summary in storage
-                article.summary = summary;
-                
-                // Update in Supabase
-                console.log('Saving summary to database for article:', article.id);
-                const { error } = await supabase
-                    .from('articles')
-                    .update({ summary })
-                    .eq('id', article.id);
-
-                if (error) {
-                    console.error('Error saving summary to database:', error);
-                    throw error;
-                }
-                console.log('Summary saved to database successfully');
-
-                generateSummaryBtn.textContent = 'Re-generate Summary';
-            } catch (error) {
-                console.error('Error in summary generation:', error);
-                alert('Failed to generate summary: ' + error.message);
-                generateSummaryBtn.textContent = 'Generate Summary';
-            } finally {
-                generateSummaryBtn.disabled = false;
-            }
-        });
-
-        // Add click handler for expand button
-        const expandBtn = mainContent.querySelector('.expand-btn');
-        expandBtn.addEventListener('click', function() {
-            const contentId = this.getAttribute('data-index');
-            const content = document.getElementById(`content-${contentId}`);
-
-            if (content.classList.contains('expanded')) {
-                content.classList.remove('expanded');
-                this.textContent = 'Show More';
-                content.scrollTop = 0;
-            } else {
-                content.classList.add('expanded');
-                this.textContent = 'Show Less';
-            }
-        });
-
         // Create controls section
         const controls = document.createElement('div');
         controls.className = 'article-controls';
@@ -1222,24 +1196,56 @@ async function displayArticles(articles) {
 
         controls.appendChild(deleteBtn);
 
-        // Add audio player if podcast exists
-        if (articleAudioMap[article.id]) {
-            const audioContainer = document.createElement('div');
-            audioContainer.className = 'audio-container';
-            audioContainer.innerHTML = `
-                <div class="w-full max-w-2xl mx-auto p-4">
-                    <audio 
-                        class="w-full" 
-                        controls 
-                        src="${articleAudioMap[article.id]}"
-                        preload="metadata"
-                    >
-                        Your browser does not support the audio element.
-                    </audio>
-                </div>
-            `;
-            controls.insertBefore(audioContainer, controls.firstChild);
-        }
+        // Add expand button handler
+        const expandBtn = mainContent.querySelector('.expand-btn');
+        expandBtn.addEventListener('click', function() {
+            const contentId = this.getAttribute('data-index');
+            const content = document.getElementById(`content-${contentId}`);
+
+            if (content.classList.contains('expanded')) {
+                content.classList.remove('expanded');
+                this.textContent = 'Show More';
+                content.scrollTop = 0;
+            } else {
+                content.classList.add('expanded');
+                this.textContent = 'Show Less';
+            }
+        });
+
+        // Add summary button handler
+        const generateSummaryBtn = mainContent.querySelector('.generate-summary-btn');
+        generateSummaryBtn.addEventListener('click', async () => {
+            try {
+                if (!currentSession) {
+                    throw new Error('Please sign in to generate summaries');
+                }
+
+                generateSummaryBtn.disabled = true;
+                generateSummaryBtn.textContent = 'Generating...';
+                
+                const summary = await generateSummary(article.content);
+                const summaryElement = mainContent.querySelector(`.article-summary#summary-${index}`);
+                summaryElement.style.display = 'block';
+                summaryElement.innerHTML = `<strong>Summary:</strong> ${summary}`;
+                
+                // Update the summary in storage and database
+                article.summary = summary;
+                const { error } = await supabase
+                    .from('articles')
+                    .update({ summary })
+                    .eq('id', article.id);
+
+                if (error) throw error;
+                
+                generateSummaryBtn.textContent = 'Re-generate Summary';
+            } catch (error) {
+                console.error('Error in summary generation:', error);
+                alert('Failed to generate summary: ' + error.message);
+                generateSummaryBtn.textContent = 'Generate Summary';
+            } finally {
+                generateSummaryBtn.disabled = false;
+            }
+        });
 
         articleElement.appendChild(mainContent);
         articleElement.appendChild(controls);
