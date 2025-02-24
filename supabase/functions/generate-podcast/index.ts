@@ -122,39 +122,19 @@ serve(async (req) => {
       .filter(line => line.trim() !== '')
       .map(line => line.trim())
 
-    const speaker1Lines = []
-    const speaker2Lines = []
-
-    lines.forEach(line => {
-      const cleanedLine = line.replace(/^(Host ?[12]:?\s*)/i, '').trim()
-      if (line.match(/^Host ?1:?/i)) {
-        speaker1Lines.push(cleanedLine)
-      } else if (line.match(/^Host ?2:?/i)) {
-        speaker2Lines.push(cleanedLine)
-      }
-    })
-
-    // Generate audio for each speaker's lines
+    // Generate audio for each line in order, alternating voices
     console.log("Generating audio for speakers...")
     const audioPromises = []
 
-    // Generate audio for speaker 1 (alloy voice)
-    for (const line of speaker1Lines) {
+    for (const line of lines) {
+      const cleanedLine = line.replace(/^(Host ?[12]:?\s*)/i, '').trim()
+      // Determine if this is Host 1 or Host 2
+      const isHost1 = line.match(/^Host ?1:?/i)
+      
       const response = await openai.audio.speech.create({
         model: "tts-1",
-        voice: "alloy",
-        input: line
-      })
-      const buffer = await response.arrayBuffer()
-      audioPromises.push(buffer)
-    }
-
-    // Generate audio for speaker 2 (onyx voice)
-    for (const line of speaker2Lines) {
-      const response = await openai.audio.speech.create({
-        model: "tts-1",
-        voice: "onyx",
-        input: line
+        voice: isHost1 ? "alloy" : "onyx",
+        input: cleanedLine
       })
       const buffer = await response.arrayBuffer()
       audioPromises.push(buffer)
