@@ -217,6 +217,22 @@ async function handleSaveArticle(articleData) {
             access_token: session.access_token ? 'Present' : 'Missing'
         });
 
+        // Check if title is provided, if not generate it
+        if (!articleData.title) {
+            console.log('Generating title for article content:', articleData.text); // Debugging line
+            // Call the Supabase edge function to generate the title
+            const { data: titleData, error: titleError } = await supabase.functions.invoke('generate-title', {
+                body: { text: articleData.text }
+            });
+
+            if (titleError) {
+                console.error('Error generating title:', titleError);
+                articleData.title = 'Untitled Article'; // Fallback title
+            } else {
+                articleData.title = titleData.title || 'Untitled Article';
+            }
+        }
+
         // Insert the article with detailed error logging
         const { data, error } = await supabase
             .from('articles')

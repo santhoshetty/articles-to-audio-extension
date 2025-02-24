@@ -1353,4 +1353,51 @@ async function displayArticles(articles) {
         articleElement.appendChild(controls);
         container.appendChild(articleElement);
     });
+
+    // Add event listener for saving a new article
+    const saveArticle = async (article) => {
+        console.log('Attempting to save article:', article); // Debugging line
+
+        // Generate title if it doesn't exist
+        if (!article.title) {
+            try {
+                console.log('Generating title for article text:', article.text); // Debugging line
+                const generatedTitle = await generateTitle(article.text);
+                article.title = generatedTitle || 'Untitled Article';
+            } catch (error) {
+                console.error('Error generating title:', error);
+                article.title = 'Untitled Article'; // Fallback if title generation fails
+            }
+        }
+
+        // Save the article to storage
+        storage.articles.push(article);
+        await chrome.storage.local.set({ articles: storage.articles });
+
+        // Now save the article to Supabase, including the title
+        const { error } = await supabase
+            .from('articles')
+            .insert(article);
+
+        if (error) {
+            console.error('Error saving article to Supabase:', error);
+            throw error;
+        }
+    };
+
+    // Assuming this is part of your article submission logic
+    document.getElementById('saveArticleButton').addEventListener('click', async () => {
+        const articleText = document.getElementById('articleTextArea').value; // Get the article text from a textarea
+        const newArticle = {
+            text: articleText,
+            // other properties if needed
+        };
+
+        try {
+            await saveArticle(newArticle); // Call the saveArticle function
+            console.log('Article saved successfully:', newArticle);
+        } catch (error) {
+            console.error('Error saving article:', error);
+        }
+    });
 }
