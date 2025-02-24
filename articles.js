@@ -71,27 +71,112 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             console.log('Selected articles:', articles.map(a => a.title).join(', '));
 
-            // Call Supabase edge function to generate podcast
-            console.log('Calling generate-podcast edge function with articles:', JSON.stringify(articles, null, 2));
-            const { data: podcastData, error: podcastError } = await supabase.functions.invoke('generate-podcast', {
+            // Check if a podcast already exists for these articles
+            const articleIds = articles.map(a => a.id);
+            console.log('Checking for existing podcast for articles:', articleIds);
+
+            const { data: existingPodcasts, error: podcastError } = await supabase
+                .from('article_audio')
+                .select(`
+                    audio_id,
+                    audio_files (
+                        file_url
+                    )
+                `)
+                .in('article_id', articleIds);
+
+            if (podcastError) {
+                throw new Error(`Failed to check existing podcasts: ${podcastError.message}`);
+            }
+
+            // Group podcasts by audio_id to find if all articles share the same podcast
+            const podcastGroups = {};
+            existingPodcasts.forEach(entry => {
+                if (!podcastGroups[entry.audio_id]) {
+                    podcastGroups[entry.audio_id] = {
+                        count: 0,
+                        file_url: entry.audio_files?.file_url
+                    };
+                }
+                podcastGroups[entry.audio_id].count++;
+            });
+
+            // Find if there's a podcast that contains all selected articles
+            const existingPodcast = Object.entries(podcastGroups)
+                .find(([_, group]) => group.count === articleIds.length);
+
+            if (existingPodcast) {
+                console.log('Found existing podcast:', existingPodcast);
+                const [_, podcastData] = existingPodcast;
+
+                // Get the signed URL for the audio file
+                const audioUrlPath = new URL(podcastData.file_url).pathname;
+                const fileName = audioUrlPath.split('/').pop();
+                
+                const { data: signedUrlData, error: signedUrlError } = await supabase
+                    .storage
+                    .from('audio-files')
+                    .createSignedUrl(`public/${fileName}`, 604800);
+
+                if (signedUrlError) {
+                    console.error('Failed to get signed URL:', signedUrlError);
+                    throw new Error(`Failed to get signed URL: ${signedUrlError.message}`);
+                }
+
+                const audioUrl = signedUrlData.signedUrl;
+                console.log('Got signed URL for existing audio:', audioUrl);
+
+                // Update the audio player with the existing podcast
+                let bottomAudioContainer = document.getElementById('bottom-audio-player');
+                if (!bottomAudioContainer) {
+                    bottomAudioContainer = document.createElement('div');
+                    bottomAudioContainer.id = 'bottom-audio-player';
+                    bottomAudioContainer.className = 'fixed-bottom-player';
+                    document.body.appendChild(bottomAudioContainer);
+                }
+
+                bottomAudioContainer.innerHTML = `
+                    <div class="audio-player-wrapper">
+                        <div class="podcast-info">
+                            <h3>Existing Podcast</h3>
+                            <p>Articles: ${articles.map(a => a.title).join(', ')}</p>
+                        </div>
+                        <audio 
+                            class="podcast-audio" 
+                            controls 
+                            src="${audioUrl}"
+                            preload="metadata"
+                        >
+                            Your browser does not support the audio element.
+                        </audio>
+                    </div>
+                `;
+
+                alert('Loading existing podcast for selected articles.');
+                return;
+            }
+
+            // If no existing podcast found, generate a new one
+            console.log('No existing podcast found, generating new one...');
+            const { data: podcastData, error: generationError } = await supabase.functions.invoke('generate-podcast', {
                 body: { articles }
             });
 
-            if (podcastError) {
-                throw new Error(`Failed to generate podcast: ${podcastError.message}`);
+            if (generationError) {
+                throw new Error(`Failed to generate podcast: ${generationError.message}`);
             }
 
             console.log('Podcast generated successfully:', podcastData);
 
             // Extract the file path from the audio_url
             const audioUrlPath = new URL(podcastData.audio_url).pathname;
-            const fileName = audioUrlPath.split('/').pop(); // Get the last part of the path (filename)
+            const fileName = audioUrlPath.split('/').pop();
             
             // Get the signed URL for the audio file
             const { data: signedUrlData, error: signedUrlError } = await supabase
                 .storage
                 .from('audio-files')
-                .createSignedUrl(`public/${fileName}`, 604800); // 7 days expiry
+                .createSignedUrl(`public/${fileName}`, 604800);
 
             if (signedUrlError) {
                 console.error('Failed to get signed URL:', signedUrlError);
