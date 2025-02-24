@@ -1013,34 +1013,26 @@ async function loadPodcasts(podcastList) {
         return;
     }
 
-    podcastList.innerHTML = `
-        <tr>
-            <th style="width: 80px">Play</th>
-            <th>Articles</th>
-        </tr>
-    `;
+    // Remove table headers, just start with empty tbody
+    podcastList.innerHTML = '';
 
     try {
         console.log('Fetching podcasts for user:', currentSession.user.id);
         
-        // First get all article_audio entries for the user
+        // Get all unique audio_ids and their associated articles for the user
         const { data: audioFiles, error: audioError } = await supabase
             .from('article_audio')
             .select(`
                 audio_id,
-                article_id,
                 audio_files (
-                    id,
-                    file_url,
-                    created_at
+                    file_url
                 ),
                 articles (
-                    id,
                     title
                 )
             `)
             .eq('user_id', currentSession.user.id)
-            .order('created_at', { ascending: false });
+            .order('audio_id', { ascending: false });
 
         if (audioError) {
             console.error('Error fetching audio files:', audioError);
@@ -1056,8 +1048,8 @@ async function loadPodcasts(podcastList) {
                     articles: []
                 };
             }
-            if (entry.articles) {
-                groups[entry.audio_id].articles.push(entry.articles);
+            if (entry.articles?.title) {
+                groups[entry.audio_id].articles.push(entry.articles.title);
             }
             return groups;
         }, {});
@@ -1068,8 +1060,8 @@ async function loadPodcasts(podcastList) {
         let currentlyPlaying = null;
 
         // Create table rows for each podcast
-        Object.values(podcastGroups).forEach(podcast => {
-            if (!podcast.file_url) return; // Skip if no audio URL
+        for (const podcast of Object.values(podcastGroups)) {
+            if (!podcast.file_url) continue; // Skip if no audio URL
 
             const row = document.createElement('tr');
             
@@ -1080,11 +1072,11 @@ async function loadPodcasts(podcastList) {
             playBtn.innerHTML = '▶️';
             playBtn.dataset.playing = 'false';
 
-            // Create audio element
-            const audio = new Audio(podcast.file_url);
+            // Create audio element (but don't set src until play is clicked)
+            const audio = new Audio();
             
             // Handle play/pause
-            playBtn.addEventListener('click', () => {
+            playBtn.addEventListener('click', async () => {
                 if (currentlyPlaying && currentlyPlaying !== audio) {
                     currentlyPlaying.pause();
                     currentlyPlaying.currentTime = 0;
@@ -1098,6 +1090,31 @@ async function loadPodcasts(podcastList) {
                 }
 
                 if (audio.paused) {
+                    // Only get signed URL and set source when playing for the first time
+                    if (!audio.src) {
+                        try {
+                            // Get the file name from the URL
+                            const audioUrlPath = new URL(podcast.file_url).pathname;
+                            const fileName = audioUrlPath.split('/').pop();
+                            
+                            // Get signed URL
+                            const { data: signedUrlData, error: signedUrlError } = await supabase
+                                .storage
+                                .from('audio-files')
+                                .createSignedUrl(`public/${fileName}`, 604800); // 7 days expiry
+
+                            if (signedUrlError) {
+                                console.error('Failed to get signed URL:', signedUrlError);
+                                throw signedUrlError;
+                            }
+
+                            audio.src = signedUrlData.signedUrl;
+                        } catch (error) {
+                            console.error('Error getting signed URL:', error);
+                            alert('Failed to load audio. Please try again.');
+                            return;
+                        }
+                    }
                     audio.play();
                     playBtn.innerHTML = '⏸️';
                     playBtn.dataset.playing = 'true';
@@ -1126,9 +1143,9 @@ async function loadPodcasts(podcastList) {
             articlesList.style.margin = '0';
             articlesList.style.paddingLeft = '20px';
             
-            podcast.articles.forEach(article => {
+            podcast.articles.forEach(title => {
                 const li = document.createElement('li');
-                li.textContent = article.title;
+                li.textContent = title;
                 articlesList.appendChild(li);
             });
             
@@ -1136,9 +1153,9 @@ async function loadPodcasts(podcastList) {
             row.appendChild(articlesCell);
 
             podcastList.appendChild(row);
-        });
+        }
 
-        if (podcastList.children.length <= 1) { // Only header row
+        if (podcastList.children.length === 0) {
             const emptyRow = document.createElement('tr');
             emptyRow.innerHTML = '<td colspan="2" style="text-align: center;">No podcasts found</td>';
             podcastList.appendChild(emptyRow);
