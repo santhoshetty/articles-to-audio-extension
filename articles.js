@@ -229,40 +229,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     });
 
-    // Add event listeners for date range inputs
-    const startDateInput = document.getElementById('startDate');
-    const endDateInput = document.getElementById('endDate');
-
-    const filterArticlesByDate = () => {
-        const startDate = new Date(startDateInput.value);
-        const endDate = new Date(endDateInput.value);
-        const articles = document.querySelectorAll('.article');
-
-        // Check if both date inputs are empty
-        if (!startDateInput.value && !endDateInput.value) {
-            articles.forEach(article => {
-                article.style.display = ''; // Show all articles
-            });
-            return; // Exit the function early
-        }
-
-        articles.forEach((article, index) => {
-            // Access the date from the storage.articles array
-            const articleDate = new Date(storage.articles[index].date); // Assuming storage.articles is accessible
-
-            // Check if the article date is within the selected range
-            if (articleDate >= startDate && articleDate <= endDate) {
-                article.style.display = ''; // Show article
-            } else {
-                article.style.display = 'none'; // Hide article
-            }
-        });
-    };
-
-    // Attach event listeners to filter articles when dates change
-    startDateInput.addEventListener('change', filterArticlesByDate);
-    endDateInput.addEventListener('change', filterArticlesByDate);
-
     // Add event listener for the All Podcasts button
     document.getElementById('allPodcasts').addEventListener('click', async () => {
         const podcastTable = document.getElementById('podcast-table');
@@ -380,13 +346,97 @@ async function loadArticles() {
             summary: article.summary
         }));
         
+        // Store articles in a global variable for date filtering
+        window.articlesData = mappedArticles;
+        
         displayArticles(mappedArticles);
+        
+        // Set up date filtering after articles are loaded
+        setupDateFiltering();
     } catch (error) {
         console.error('Articles page: Error in loadArticles:', error);
         console.error('Error stack:', error.stack);
         const container = document.getElementById('articles-container');
         container.innerHTML = '<div class="no-articles">Error loading articles. Please try again.</div>';
     }
+}
+
+// Setup date filtering functionality
+function setupDateFiltering() {
+    const startDateInput = document.getElementById('startDate');
+    const endDateInput = document.getElementById('endDate');
+    
+    if (!startDateInput || !endDateInput) {
+        console.error('Date filter inputs not found in the DOM');
+        return;
+    }
+    
+    // Function to filter articles by date
+    const filterArticlesByDate = () => {
+        console.log('Filtering articles by date');
+        
+        if (!window.articlesData) {
+            console.error('No articles data available for filtering');
+            return;
+        }
+        
+        const startDate = startDateInput.value ? new Date(startDateInput.value) : null;
+        const endDate = endDateInput.value ? new Date(endDateInput.value) : null;
+        
+        // If both inputs are empty, show all articles
+        if (!startDate && !endDate) {
+            document.querySelectorAll('.article').forEach(article => {
+                article.style.display = '';
+            });
+            return;
+        }
+        
+        // Add one day to end date to include the selected day
+        if (endDate) {
+            endDate.setDate(endDate.getDate() + 1);
+        }
+        
+        document.querySelectorAll('.article').forEach((article, index) => {
+            if (index >= window.articlesData.length) return;
+            
+            const articleDate = new Date(window.articlesData[index].created_at);
+            let showArticle = true;
+            
+            if (startDate && articleDate < startDate) {
+                showArticle = false;
+            }
+            
+            if (endDate && articleDate > endDate) {
+                showArticle = false;
+            }
+            
+            article.style.display = showArticle ? '' : 'none';
+        });
+        
+        // Update Select All checkbox to only consider visible articles
+        updateSelectAllCheckbox();
+    };
+    
+    // Attach event listeners to filter articles when dates change
+    startDateInput.addEventListener('change', filterArticlesByDate);
+    endDateInput.addEventListener('change', filterArticlesByDate);
+}
+
+// Function to update the Select All checkbox state based on visible articles
+function updateSelectAllCheckbox() {
+    const selectAllCheckbox = document.getElementById('selectAllCheckbox');
+    if (!selectAllCheckbox) return;
+    
+    const visibleArticles = Array.from(document.querySelectorAll('.article'))
+        .filter(article => article.style.display !== 'none');
+    
+    const visibleCheckboxes = visibleArticles
+        .map(article => article.querySelector('.article-checkbox'))
+        .filter(checkbox => checkbox !== null);
+    
+    // If all visible checkboxes are checked, check the Select All checkbox
+    selectAllCheckbox.checked = visibleCheckboxes.length > 0 && 
+        visibleCheckboxes.every(checkbox => checkbox.checked);
 }
 
 let allArticles = [];
@@ -423,7 +473,7 @@ document.addEventListener("DOMContentLoaded", async () => {
         const endDate = new Date(endDateInput.value);
 
         checkboxes.forEach((checkbox, index) => {
-            const articleDate = new Date(storage.articles[index].date); // Access the date from storage
+            const articleDate = new Date(storage.articles[index].created_at); // Access the date from storage
 
             // Check if the article date is within the selected range
             if (articleDate >= startDate && articleDate <= endDate) {
@@ -441,14 +491,14 @@ document.addEventListener("DOMContentLoaded", async () => {
     });
 
     // Sort articles by date (newest first)
-    storage.articles.sort((a, b) => new Date(b.date) - new Date(a.date));
+    storage.articles.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
     // Display each article
     for (let [index, article] of storage.articles.entries()) {
         const articleElement = document.createElement('div');
         articleElement.className = 'article';
 
-        const date = new Date(article.date).toLocaleDateString('en-US', {
+        const date = new Date(article.created_at).toLocaleDateString('en-US', {
             year: 'numeric',
             month: 'long',
             day: 'numeric',
@@ -636,40 +686,6 @@ document.addEventListener("DOMContentLoaded", async () => {
         container.appendChild(articleElement);
     }
 
-    // Add event listeners for date range inputs
-    const startDateInput = document.getElementById('startDate');
-    const endDateInput = document.getElementById('endDate');
-
-    const filterArticlesByDate = () => {
-        const startDate = new Date(startDateInput.value);
-        const endDate = new Date(endDateInput.value);
-        const articles = document.querySelectorAll('.article');
-
-        // Check if both date inputs are empty
-        if (!startDateInput.value && !endDateInput.value) {
-            articles.forEach(article => {
-                article.style.display = ''; // Show all articles
-            });
-            return; // Exit the function early
-        }
-
-        articles.forEach((article, index) => {
-            // Access the date from the storage.articles array
-            const articleDate = new Date(storage.articles[index].date); // Assuming storage.articles is accessible
-
-            // Check if the article date is within the selected range
-            if (articleDate >= startDate && articleDate <= endDate) {
-                article.style.display = ''; // Show article
-            } else {
-                article.style.display = 'none'; // Hide article
-            }
-        });
-    };
-
-    // Attach event listeners to filter articles when dates change
-    startDateInput.addEventListener('change', filterArticlesByDate);
-    endDateInput.addEventListener('change', filterArticlesByDate);
-
     // Add event listener for the All Podcasts button
     document.getElementById('allPodcasts').addEventListener('click', async () => {
         const podcastTable = document.getElementById('podcast-table');
@@ -692,9 +708,8 @@ function toggleArticleSelection(articleId, checkbox) {
         selectedArticles.delete(articleId);
     }
 
-    // Uncheck Select All if any article is unchecked
-    const selectAllCheckbox = document.getElementById('selectAllCheckbox');
-    selectAllCheckbox.checked = Array.from(document.querySelectorAll('.select-article')).every(cb => cb.checked);
+    // Update Select All checkbox state
+    updateSelectAllCheckbox();
 }
 
 // Utility function to delay execution
@@ -1218,9 +1233,23 @@ async function displayArticles(articles) {
     // Add Select All handler
     const selectAllCheckbox = document.getElementById('selectAllCheckbox');
     selectAllCheckbox.addEventListener('change', () => {
-        const checkboxes = document.querySelectorAll('.article-checkbox');
-        checkboxes.forEach(checkbox => {
-            checkbox.checked = selectAllCheckbox.checked;
+        // Only select visible articles
+        const visibleArticles = Array.from(document.querySelectorAll('.article'))
+            .filter(article => article.style.display !== 'none');
+        
+        visibleArticles.forEach(article => {
+            const checkbox = article.querySelector('.article-checkbox');
+            if (checkbox) {
+                checkbox.checked = selectAllCheckbox.checked;
+                
+                // Update selectedArticles set
+                const articleId = checkbox.dataset.articleId;
+                if (selectAllCheckbox.checked) {
+                    selectedArticles.add(articleId);
+                } else {
+                    selectedArticles.delete(articleId);
+                }
+            }
         });
     });
 
