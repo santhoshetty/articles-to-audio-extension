@@ -89,64 +89,245 @@ serve(async (req) => {
 
     // Generate conversation script
     console.log("Generating conversation script...")
-    const prompt = `You are two podcast hosts, Alice and Bob.
-    Discuss the following articles in a conversational and engaging way.
-    
-    ${articles.map((article, i) => `Article ${i + 1}: ${article.title}
-    ${article.summary || article.content.substring(0, 500)}`).join('\n\n')}
-    
-    Format it like a real dialogue:
-    Host 1: (Introduction)
-    Host 2: (Comment)
-    Host 1: (More details)
-    Host 2: (Opinion)
-    Continue this structure.`
 
-    const scriptResponse = await openai.chat.completions.create({
-      model: 'gpt-3.5-turbo',
-      messages: [
-        {
-          role: 'system',
-          content: prompt
-        }
-      ],
-      max_tokens: 1500,
-      temperature: 0.7
-    })
+    // Split articles into chunks of maximum 2 articles per chunk
+    const chunkSize = 2;
+    const articleChunks = [];
+    for (let i = 0; i < articles.length; i += chunkSize) {
+      articleChunks.push(articles.slice(i, i + chunkSize));
+    }
+    
+    console.log(`Split ${articles.length} articles into ${articleChunks.length} chunks`);
 
-    const script = scriptResponse.choices[0].message.content.trim()
-    console.log("Conversation script generated")
+    // Generate script for each chunk and then combine
+    let combinedScript = "";
+    let isFirstChunk = true;
+    let isLastChunk = false;
+
+    // Create reusable template sections to reduce repetition
+    const mainDiscussionTemplate = (chunk_time_mins) => `2. Main Discussion (${chunk_time_mins} minutes):
+  For each article, cover these aspects in a natural conversation:
+  - Definition and Background:
+    - Alice defines the topic and provides historical context.
+    - Bob adds interesting facts or anecdotes related to the topic.
+  - Current Relevance and Applications:
+    - Both hosts discuss how the topic applies in today's world.
+    - Include real-world examples, case studies, or recent news.
+  - Challenges and Controversies:
+    - Hosts explore any debates or challenges associated with the topic.
+    - Present multiple viewpoints to provide a balanced perspective.
+  - Future Outlook:
+    - Hosts speculate on the future developments related to the topic.
+    - Discuss potential innovations or changes on the horizon.`;
+
+    const toneStyleTemplate = `Tone and Style:
+  - Conversational and engaging, as if speaking directly to the listener.
+  - Use inclusive language to foster a sense of community.
+  - Incorporate light humor or personal anecdotes where appropriate to humanize the discussion.`;
+
+    const guidelinesTemplate = (includeEnding = false) => `Additional Guidelines:
+  - Ensure a balanced exchange between both hosts, allowing each to contribute equally.
+  - Use clear and concise language, avoiding jargon unless it's explained.
+  - Aim for smooth transitions between topics to maintain listener interest.
+  - IMPORTANT: DO NOT use terms like "Segment 1" or "Section 2" in the actual dialogue.
+  - Consider the use of rhetorical questions to engage the audience and provoke thought.
+  - ALWAYS refer to the hosts by their actual names (Alice and Bob), not as "Host 1" or "Host 2".${includeEnding ? "\n  - END the script in a way that naturally leads to more discussion (DO NOT conclude the podcast)." : ""}`;
+
+    const formatTemplate = `Format it like a real dialogue:
+Alice: ...
+Bob: ...
+Alice: ...
+Bob: ...
+Continue this structure with natural conversation flow.`;
+
+    const transitionTemplate = `IMPORTANT TRANSITION NOTES:
+  - NEVER end any chunk (except the last) with "thank you for listening", "that's all for today", or any other conclusion-like language.
+  - The conversation should flow as if it will naturally continue to the next topic.
+  - Do not make any reference to "wrapping up" or "concluding" except in the very last chunk.
+  - Each chunk should end with a natural segue that leads into more discussion.`;
+
+    // Get all article titles for the introduction
+    const allArticleTitles = articles.map(article => article.title);
+    
+    for (let chunkIndex = 0; chunkIndex < articleChunks.length; chunkIndex++) {
+      const chunk = articleChunks[chunkIndex];
+      isLastChunk = chunkIndex === articleChunks.length - 1;
+      
+      console.log(`Generating script for chunk ${chunkIndex + 1} of ${articleChunks.length} (${chunk.length} articles)`);
+      
+      // Calculate time for this chunk
+      const chunk_time_mins = chunk.length * 5;  // 5 minutes per article
+      
+      // Create prompt based on chunk position (first, middle, last)
+      let chunkPrompt = "";
+      
+      if (isFirstChunk) {
+        // First chunk includes introduction to ALL articles, not just current chunk
+        chunkPrompt = `You are two podcast hosts, Alice and Bob.
+
+Create a podcast script where two hosts engage in a dynamic 
+and informative conversation about the articles given below. The discussion should be accessible 
+to a general audience, providing clear explanations, real-world examples, 
+and diverse perspectives. Some articles have summaries as well attached.
+
+${chunk.map((article, i) => `Article ${i + 1}: ${article.title}
+${article.summary || article.content}`).join('\n\n')}
+
+Structure:
+
+1. Introduction (1 minute):
+  - Alice greets listeners and introduces Bob.
+  - Brief overview of the episode's topic and its relevance.
+  - Mention that today you'll be discussing ALL of these topics: ${allArticleTitles.join(', ')}
+  - Create excitement about the full range of articles being covered in this episode.
+
+${mainDiscussionTemplate(chunk_time_mins)}
+${isLastChunk ? `\n3. Conclusion (1 minute):
+  - Hosts summarize key takeaways from the discussion.
+  - Encourage listeners to reflect on the topic or engage further.` : ''}
+
+${toneStyleTemplate}
+
+${guidelinesTemplate(!isLastChunk)}
+
+${transitionTemplate}
+
+${formatTemplate}`;
+      } else if (isLastChunk) {
+        // Last chunk includes conclusion
+        chunkPrompt = `You are two podcast hosts, Alice and Bob, continuing an ongoing conversation.
+
+Create a natural continuation of a podcast discussion about the following articles.
+You've already discussed other topics earlier in the podcast, and now you'll discuss these final articles.
+The discussion should be accessible to a general audience, providing clear explanations, real-world examples, 
+and diverse perspectives. Some articles have summaries as well attached.
+
+${chunk.map((article, i) => `Article ${articleChunks.flat().indexOf(article) + 1}: ${article.title}
+${article.summary || article.content}`).join('\n\n')}
+
+Structure for this part:
+
+1. Transition (briefly acknowledge you're moving to new articles, but make it sound completely natural)
+
+${mainDiscussionTemplate(chunk_time_mins)}
+
+3. Conclusion (1 minute):
+  - Hosts summarize key takeaways from ALL articles discussed (including those from earlier parts).
+  - Encourage listeners to reflect on the topics or engage further.
+  - Thank the audience for listening and mention any future episodes.
+
+${toneStyleTemplate}
+
+${guidelinesTemplate()}
+  - Make this sound like a SEAMLESS CONTINUATION of an ongoing conversation (don't explicitly reference "continuing our discussion").
+  - ONLY in this final chunk should you include a proper podcast conclusion.
+
+${formatTemplate}`;
+      } else {
+        // Middle chunk
+        chunkPrompt = `You are two podcast hosts, Alice and Bob, continuing an ongoing conversation.
+
+Create a natural continuation of a podcast discussion about the following articles.
+You've already discussed other topics earlier in the podcast, and will discuss more after this section.
+The discussion should be accessible to a general audience, providing clear explanations, real-world examples, 
+and diverse perspectives. Some articles have summaries as well attached.
+
+${chunk.map((article, i) => `Article ${articleChunks.flat().indexOf(article) + 1}: ${article.title}
+${article.summary || article.content}`).join('\n\n')}
+
+Structure for this part:
+
+1. Transition (briefly acknowledge you're moving to new articles, but make it sound completely natural)
+
+${mainDiscussionTemplate(chunk_time_mins)}
+
+${toneStyleTemplate}
+
+${guidelinesTemplate(true)}
+  - Make this sound like a SEAMLESS CONTINUATION of an ongoing conversation (don't explicitly reference "continuing our discussion").
+
+${transitionTemplate}
+
+${formatTemplate}`;
+      }
+      
+      // Generate script for this chunk
+      const chunkScriptResponse = await openai.chat.completions.create({
+        model: 'gpt-3.5-turbo',
+        messages: [
+          {
+            role: 'system',
+            content: chunkPrompt
+          }
+        ],
+        max_tokens: 4096,
+        temperature: 0.7
+      });
+      
+      const chunkScript = chunkScriptResponse.choices[0].message.content.trim();
+      
+      // Add to combined script
+      if (combinedScript) {
+        // Add a newline between chunks
+        combinedScript += "\n\n" + chunkScript;
+      } else {
+        combinedScript = chunkScript;
+      }
+      
+      isFirstChunk = false;
+    }
+    
+    console.log("Combined script generated from multiple chunks");
+    
+    const script = combinedScript;
 
     // Parse script into lines for each speaker
     const lines = script.split('\n')
       .filter(line => line.trim() !== '')
       .map(line => line.trim())
+      .filter(line => line.match(/^(Alice|Bob):?/i)) // Only keep lines with Alice or Bob prefixes
 
-    // Generate audio for each line in order, alternating voices
+    // Generate audio for each line in order, with proper voice assignment
     console.log("Generating audio for speakers...")
     const audioPromises = []
+    const audioMetadata = [] // Keep track of which voice was used for each segment
 
     for (const line of lines) {
-      const cleanedLine = line.replace(/^(Host ?[12]:?\s*)/i, '').trim()
-      // Determine if this is Host 1 or Host 2
-      const isHost1 = line.match(/^Host ?1:?/i)
+      const cleanedLine = line.replace(/^(Alice|Bob):?\s*/i, '').trim()
+      // Determine if this is Alice or Bob
+      const isAlice = line.match(/^Alice:?/i)
+      const voice = isAlice ? "alloy" : "onyx"
       
-      const response = await openai.audio.speech.create({
-        model: "tts-1",
-        voice: isHost1 ? "alloy" : "onyx",
-        input: cleanedLine
-      })
-      const buffer = await response.arrayBuffer()
-      audioPromises.push(buffer)
+      console.log(`Generating audio for: "${cleanedLine.substring(0, 50)}..." with voice: ${voice}`)
+      
+      try {
+        const response = await openai.audio.speech.create({
+          model: "tts-1",
+          voice: voice,
+          input: cleanedLine
+        })
+        const buffer = await response.arrayBuffer()
+        audioPromises.push(buffer)
+        audioMetadata.push({ isAlice, voice })
+      } catch (error) {
+        console.error(`Error generating audio for line: "${cleanedLine.substring(0, 50)}..."`, error)
+        // Continue with other lines even if one fails
+      }
     }
 
-    // Combine all audio buffers
+    console.log(`Generated ${audioPromises.length} audio segments with alternating voices`)
+
+    // Combine all audio buffers with proper spacing between speakers
     const totalLength = audioPromises.reduce((acc, buf) => acc + buf.byteLength, 0)
     const combinedBuffer = new Uint8Array(totalLength)
     let offset = 0
-    for (const buffer of audioPromises) {
+    for (let i = 0; i < audioPromises.length; i++) {
+      const buffer = audioPromises[i]
       combinedBuffer.set(new Uint8Array(buffer), offset)
       offset += buffer.byteLength
+      
+      // Log which speaker and voice was used
+      console.log(`Added segment ${i+1}: ${audioMetadata[i].isAlice ? 'Alice (alloy)' : 'Bob (onyx)'}, Length: ${buffer.byteLength} bytes`)
     }
 
     // Generate a unique ID for the audio file
