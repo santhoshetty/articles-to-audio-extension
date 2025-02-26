@@ -24,8 +24,6 @@
   - Implement session management to keep users logged in.
 
 
-I have finished everything until here. Lets build Create API Endpoints Using Supabase. Implement correct logs to track the flow of the code.
-
 ## 3. Create API Endpoints Using Supabase
 
 - **Auto-generated RESTful API:**
@@ -127,6 +125,8 @@ I have finished everything until here. Lets build Create API Endpoints Using Sup
 ---
 
 # Future Phases
+
+<!-- I have finished everything until here. Lets build the mobile app version. -->
 
 ## Mobile App Development
 
