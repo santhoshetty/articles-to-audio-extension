@@ -1,0 +1,7 @@
+{
+    "mcpServers": {
+        "supabase": {
+            "command": "~/bin/supabase-mcp-server"
+        }
+    }
+} 
