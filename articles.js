@@ -34,7 +34,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         // Show loading state
         generatePodcastBtn.disabled = true;
-        generatePodcastBtn.textContent = 'Generating...';
+        generatePodcastBtn.textContent = 'Generating Script...';
         const loadingIcon = document.getElementById('loadingIcon');
         if (loadingIcon) {
             loadingIcon.style.display = 'inline';
@@ -71,154 +71,23 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             console.log('Selected articles:', articles.map(a => a.title).join(', '));
 
-            // Check if a podcast already exists for these articles
-            const articleIds = articles.map(a => a.id);
-            console.log('Checking for existing podcast for articles:', articleIds);
-
-            const { data: existingPodcasts, error: podcastError } = await supabase
-                .from('article_audio')
-                .select(`
-                    audio_id,
-                    audio_files (
-                        file_url
-                    )
-                `)
-                .in('article_id', articleIds);
-
-            if (podcastError) {
-                throw new Error(`Failed to check existing podcasts: ${podcastError.message}`);
-            }
-
-            // Group podcasts by audio_id to find if all articles share the same podcast
-            const podcastGroups = {};
-            existingPodcasts.forEach(entry => {
-                if (!podcastGroups[entry.audio_id]) {
-                    podcastGroups[entry.audio_id] = {
-                        count: 0,
-                        file_url: entry.audio_files?.file_url
-                    };
-                }
-                podcastGroups[entry.audio_id].count++;
-            });
-
-            // Find if there's a podcast that contains all selected articles
-            const existingPodcast = Object.entries(podcastGroups)
-                .find(([_, group]) => group.count === articleIds.length);
-
-            if (existingPodcast) {
-                console.log('Found existing podcast:', existingPodcast);
-                const [_, podcastData] = existingPodcast;
-
-                // Get the signed URL for the audio file
-                const audioUrlPath = new URL(podcastData.file_url).pathname;
-                const fileName = audioUrlPath.split('/').pop();
-                
-                const { data: signedUrlData, error: signedUrlError } = await supabase
-                    .storage
-                    .from('audio-files')
-                    .createSignedUrl(`public/${fileName}`, 604800);
-
-                if (signedUrlError) {
-                    console.error('Failed to get signed URL:', signedUrlError);
-                    throw new Error(`Failed to get signed URL: ${signedUrlError.message}`);
-                }
-
-                const audioUrl = signedUrlData.signedUrl;
-                console.log('Got signed URL for existing audio:', audioUrl);
-
-                // Update the audio player with the existing podcast
-                let bottomAudioContainer = document.getElementById('bottom-audio-player');
-                if (!bottomAudioContainer) {
-                    bottomAudioContainer = document.createElement('div');
-                    bottomAudioContainer.id = 'bottom-audio-player';
-                    bottomAudioContainer.className = 'fixed-bottom-player';
-                    document.body.appendChild(bottomAudioContainer);
-                }
-
-                bottomAudioContainer.innerHTML = `
-                    <div class="audio-player-wrapper">
-                        <div class="podcast-info">
-                            <h3>Existing Podcast</h3>
-                            <p>Articles: ${articles.map(a => a.title).join(', ')}</p>
-                        </div>
-                        <audio 
-                            class="podcast-audio" 
-                            controls 
-                            src="${audioUrl}"
-                            preload="metadata"
-                        >
-                            Your browser does not support the audio element.
-                        </audio>
-                    </div>
-                `;
-
-                alert('Loading existing podcast for selected articles.');
-                return;
-            }
-
-            // If no existing podcast found, generate a new one
-            console.log('No existing podcast found, generating new one...');
-            const { data: podcastData, error: generationError } = await supabase.functions.invoke('generate-podcast', {
+            // Call the new generate-podcast-script function
+            console.log('Generating podcast script...');
+            const { data: scriptData, error: scriptError } = await supabase.functions.invoke('generate-podcast-script', {
                 body: { articles }
             });
 
-            if (generationError) {
-                throw new Error(`Failed to generate podcast: ${generationError.message}`);
+            if (scriptError) {
+                throw new Error(`Failed to generate podcast script: ${scriptError.message}`);
             }
 
-            console.log('Podcast generated successfully:', podcastData);
+            console.log('Podcast script generated successfully:', scriptData);
 
-            // Extract the file path from the audio_url
-            const audioUrlPath = new URL(podcastData.audio_url).pathname;
-            const fileName = audioUrlPath.split('/').pop();
-            
-            // Get the signed URL for the audio file
-            const { data: signedUrlData, error: signedUrlError } = await supabase
-                .storage
-                .from('audio-files')
-                .createSignedUrl(`public/${fileName}`, 604800);
-
-            if (signedUrlError) {
-                console.error('Failed to get signed URL:', signedUrlError);
-                throw new Error(`Failed to get signed URL: ${signedUrlError.message}`);
-            }
-
-            const audioUrl = signedUrlData.signedUrl;
-            console.log('Got signed URL for audio:', audioUrl);
-
-            // Create or get the bottom audio player container
-            let bottomAudioContainer = document.getElementById('bottom-audio-player');
-            if (!bottomAudioContainer) {
-                bottomAudioContainer = document.createElement('div');
-                bottomAudioContainer.id = 'bottom-audio-player';
-                bottomAudioContainer.className = 'fixed-bottom-player';
-                document.body.appendChild(bottomAudioContainer);
-            }
-
-            // Update the audio player with the new podcast
-            bottomAudioContainer.innerHTML = `
-                <div class="audio-player-wrapper">
-                    <div class="podcast-info">
-                        <h3>Generated Podcast</h3>
-                        <p>Articles: ${articles.map(a => a.title).join(', ')}</p>
-                    </div>
-                    <audio 
-                        class="podcast-audio" 
-                        controls 
-                        src="${audioUrl}"
-                        preload="metadata"
-                    >
-                        Your browser does not support the audio element.
-                    </audio>
-                </div>
-            `;
-
-            // Show success message
-            alert('Podcast generated successfully!');
-
+            // Display the podcast script in the frontend
+            displayPodcastScript(scriptData.podcast_script, articles);
         } catch (error) {
-            console.error('Error generating podcast:', error);
-            alert('Failed to generate podcast. Please try again.');
+            console.error('Error generating podcast script:', error);
+            alert(`Failed to generate podcast script: ${error.message}`);
         } finally {
             // Reset button state
             generatePodcastBtn.disabled = false;
@@ -1429,4 +1298,354 @@ async function displayArticles(articles) {
             console.error('Error saving article:', error);
         }
     });
+}
+
+// Function to display the podcast script in the frontend
+function displayPodcastScript(script, articles) {
+    console.log('Displaying podcast script');
+    
+    // Remove any existing script container
+    const existingContainer = document.getElementById('podcast-script-container');
+    if (existingContainer) {
+        existingContainer.remove();
+    }
+    
+    // Create a container for the script
+    const scriptContainer = document.createElement('div');
+    scriptContainer.id = 'podcast-script-container';
+    scriptContainer.style.cssText = `
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        width: 80%;
+        max-width: 800px;
+        max-height: 80vh;
+        background-color: white;
+        border-radius: 8px;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+        padding: 20px;
+        z-index: 2000;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+    `;
+    
+    // Create a header
+    const header = document.createElement('div');
+    header.style.cssText = `
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 15px;
+        padding-bottom: 10px;
+        border-bottom: 1px solid #eee;
+    `;
+    
+    // Add title
+    const title = document.createElement('h2');
+    title.textContent = 'Podcast Script';
+    title.style.margin = '0';
+    header.appendChild(title);
+    
+    // Add close button
+    const closeButton = document.createElement('button');
+    closeButton.textContent = '✕';
+    closeButton.style.cssText = `
+        background: none;
+        border: none;
+        font-size: 20px;
+        cursor: pointer;
+        color: #555;
+    `;
+    closeButton.addEventListener('click', () => {
+        scriptContainer.remove();
+        overlay.remove();
+    });
+    header.appendChild(closeButton);
+    
+    // Add articles info
+    const articlesInfo = document.createElement('div');
+    articlesInfo.style.cssText = `
+        margin-bottom: 15px;
+        font-size: 14px;
+        color: #555;
+    `;
+    articlesInfo.textContent = `Articles: ${articles.map(a => a.title).join(', ')}`;
+    
+    // Create script content area with scroll
+    const scriptContent = document.createElement('div');
+    scriptContent.style.cssText = `
+        white-space: pre-wrap;
+        overflow-y: auto;
+        flex-grow: 1;
+        padding: 15px;
+        background-color: #f9f9f9;
+        border-radius: 4px;
+        line-height: 1.6;
+        font-family: 'Arial', sans-serif;
+    `;
+    
+    // Process the script to format Alice and Bob's lines
+    const formattedScript = script.split('\n').map(line => {
+        if (line.startsWith('Alice:')) {
+            return `<div style="color: #0066cc;"><strong>${line}</strong></div>`;
+        } else if (line.startsWith('Bob:')) {
+            return `<div style="color: #cc6600;"><strong>${line}</strong></div>`;
+        }
+        return `<div>${line}</div>`;
+    }).join('');
+    
+    scriptContent.innerHTML = formattedScript;
+    
+    // Add progress indicator for audio processing
+    const progressContainer = document.createElement('div');
+    progressContainer.id = 'podcast-progress-container';
+    progressContainer.style.cssText = `
+        margin-top: 15px;
+        padding: 10px;
+        background-color: #f0f0f0;
+        border-radius: 4px;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+    `;
+    
+    const progressStatus = document.createElement('div');
+    progressStatus.id = 'podcast-progress-status';
+    progressStatus.textContent = 'Processing audio chunks...';
+    progressStatus.style.cssText = `
+        font-size: 14px;
+        color: #333;
+    `;
+    
+    const progressBar = document.createElement('div');
+    progressBar.style.cssText = `
+        width: 100%;
+        height: 8px;
+        background-color: #ddd;
+        border-radius: 4px;
+        overflow: hidden;
+    `;
+    
+    const progressFill = document.createElement('div');
+    progressFill.id = 'podcast-progress-fill';
+    progressFill.style.cssText = `
+        width: 0%;
+        height: 100%;
+        background-color: #4CAF50;
+        transition: width 0.5s ease;
+    `;
+    
+    progressBar.appendChild(progressFill);
+    progressContainer.appendChild(progressStatus);
+    progressContainer.appendChild(progressBar);
+    
+    // Add copy button
+    const copyButton = document.createElement('button');
+    copyButton.textContent = 'Copy Script';
+    copyButton.style.cssText = `
+        align-self: flex-start;
+        margin-top: 15px;
+        padding: 8px 16px;
+        background-color: #007bff;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+    `;
+    copyButton.addEventListener('click', () => {
+        navigator.clipboard.writeText(script)
+            .then(() => {
+                copyButton.textContent = 'Copied!';
+                setTimeout(() => {
+                    copyButton.textContent = 'Copy Script';
+                }, 2000);
+            })
+            .catch(err => {
+                console.error('Failed to copy script:', err);
+                alert('Failed to copy script. Please try again.');
+            });
+    });
+    
+    // Assemble the container
+    scriptContainer.appendChild(header);
+    scriptContainer.appendChild(articlesInfo);
+    scriptContainer.appendChild(scriptContent);
+    scriptContainer.appendChild(progressContainer);
+    scriptContainer.appendChild(copyButton);
+    
+    // Add to the document
+    document.body.appendChild(scriptContainer);
+    
+    // Add an overlay behind the script container
+    const overlay = document.createElement('div');
+    overlay.style.cssText = `
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background-color: rgba(0, 0, 0, 0.5);
+        z-index: 1999;
+    `;
+    overlay.addEventListener('click', () => {
+        overlay.remove();
+        scriptContainer.remove();
+    });
+    document.body.appendChild(overlay);
+    
+    // Generate a unique ID for this podcast
+    const podcastId = crypto.randomUUID();
+    const scriptId = crypto.randomUUID();
+    
+    // Calculate podcast length based on PRD formula
+    // (4 minutes × number of articles) + 2 minutes
+    const podcastLengthMinutes = (4 * articles.length) + 2;
+    
+    // Start audio processing
+    (async () => {
+        try {
+            // Call the process-podcast-audio edge function
+            const { data: audioData, error: audioError } = await supabase.functions.invoke('process-podcast-audio', {
+                body: { 
+                    podcastScript: script,
+                    scriptId: scriptId,
+                    podcastId: podcastId,
+                    podcastLengthMinutes: podcastLengthMinutes
+                }
+            });
+            
+            if (audioError) {
+                throw new Error(`Failed to start audio processing: ${audioError.message}`);
+            }
+            
+            console.log('Audio processing started:', audioData);
+            
+            // Set up interval to check processing status
+            const jobId = audioData.jobId;
+            const checkProgressInterval = setInterval(async () => {
+                try {
+                    // Check job status
+                    const { data: jobData, error: jobError } = await supabase
+                        .from('podcast_jobs')
+                        .select('status, total_chunks, completed_chunks, error')
+                        .eq('id', jobId)
+                        .single();
+                    
+                    if (jobError) {
+                        throw new Error(`Failed to check processing status: ${jobError.message}`);
+                    }
+                    
+                    if (!jobData) {
+                        throw new Error('Job not found');
+                    }
+                    
+                    // Also verify chunk status for more accurate reporting
+                    const { data: chunkData, error: chunkError } = await supabase
+                        .from('podcast_chunks')
+                        .select('status, audio_url')
+                        .eq('job_id', jobId);
+                        
+                    if (chunkError) {
+                        console.warn(`Could not verify chunk status: ${chunkError.message}`);
+                    }
+                    
+                    // Use the most accurate count we have
+                    let completedChunks = jobData.completed_chunks;
+                    let totalChunks = jobData.total_chunks;
+                    
+                    // If we have chunk data, use it to verify
+                    if (chunkData) {
+                        const actualCompleted = chunkData.filter(chunk => chunk.status === 'completed' && chunk.audio_url).length;
+                        
+                        // Check for mismatch and use the more conservative value
+                        if (actualCompleted !== completedChunks) {
+                            console.warn(`Mismatch in completed chunks: job says ${completedChunks}, chunks show ${actualCompleted}`);
+                            // Use the smaller value to avoid showing incorrect completion
+                            completedChunks = Math.min(actualCompleted, completedChunks);
+                        }
+                        
+                        // Double-check total chunks
+                        if (chunkData.length !== totalChunks) {
+                            console.warn(`Mismatch in total chunks: job says ${totalChunks}, found ${chunkData.length}`);
+                            // Use the larger value to avoid showing incorrect completion
+                            totalChunks = Math.max(chunkData.length, totalChunks);
+                        }
+                    }
+                    
+                    // Calculate progress safely
+                    let progress = 0;
+                    if (totalChunks > 0) {
+                        progress = (completedChunks / totalChunks) * 100;
+                        // Cap at 100%
+                        progress = Math.min(progress, 100);
+                    }
+                    
+                    const progressFill = document.getElementById('podcast-progress-fill');
+                    const progressStatus = document.getElementById('podcast-progress-status');
+                    
+                    if (progressFill && progressStatus) {
+                        progressFill.style.width = `${progress}%`;
+                        
+                        if (jobData.status === 'completed') {
+                            // Verify all chunks have audio URLs before declaring completion
+                            let allChunksHaveAudio = true;
+                            
+                            if (chunkData) {
+                                const expectedChunkCount = totalChunks;
+                                const chunksWithAudio = chunkData.filter(chunk => chunk.status === 'completed' && chunk.audio_url).length;
+                                
+                                if (chunksWithAudio < expectedChunkCount) {
+                                    allChunksHaveAudio = false;
+                                    console.warn(`Only ${chunksWithAudio} of ${expectedChunkCount} chunks have audio files`);
+                                }
+                            }
+                            
+                            if (allChunksHaveAudio) {
+                                progressStatus.textContent = 'Audio processing complete!';
+                                progressStatus.style.color = '#4CAF50';
+                                clearInterval(checkProgressInterval);
+                                
+                                // TODO: Add button to play or download the final podcast
+                            } else {
+                                // Some chunks are missing audio
+                                progressStatus.textContent = 'Completed, but some audio segments are missing. Please try again.';
+                                progressStatus.style.color = '#FF9800';  // Warning color
+                                clearInterval(checkProgressInterval);
+                            }
+                        } else if (jobData.status === 'completed_with_errors') {
+                            progressStatus.textContent = `Processing complete with some errors: ${jobData.error || 'Some chunks failed'}`;
+                            progressStatus.style.color = '#FF9800';  // Warning color
+                            clearInterval(checkProgressInterval);
+                        } else if (jobData.status === 'error') {
+                            progressStatus.textContent = `Error: ${jobData.error || 'Processing failed'}`;
+                            progressStatus.style.color = '#f44336';
+                            clearInterval(checkProgressInterval);
+                        } else {
+                            progressStatus.textContent = `Processing audio chunks... (${Math.round(progress)}%)`;
+                        }
+                    } else {
+                        // Progress elements no longer exist, user probably closed the dialog
+                        clearInterval(checkProgressInterval);
+                    }
+                } catch (error) {
+                    console.error('Error checking processing status:', error);
+                    const progressStatus = document.getElementById('podcast-progress-status');
+                    if (progressStatus) {
+                        progressStatus.textContent = `Error checking status: ${error.message}`;
+                        progressStatus.style.color = '#f44336';
+                    }
+                    clearInterval(checkProgressInterval);
+                }
+            }, 3000); // Check every 3 seconds
+        } catch (error) {
+            console.error('Error starting audio processing:', error);
+            const progressStatus = document.getElementById('podcast-progress-status');
+            if (progressStatus) {
+                progressStatus.textContent = `Error starting audio processing: ${error.message}`;
+                progressStatus.style.color = '#f44336';
+            }
+        }
+    })();
 }

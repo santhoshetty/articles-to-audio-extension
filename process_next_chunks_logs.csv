@@ -1,0 +1,220 @@
+﻿"event_message","event_type","function_id","id","level","timestamp"
+"shutdown","Shutdown","28714c86-4a06-459d-87cd-eafa8fc45496","852e7f84-87fd-4efd-96a3-38c065e993ee","log","1740814676932828"
+"Segment 3 text length: 413, Preview: "That's a great point, Bob. Now, let's talk about t..."
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","c9816b27-6eef-472e-8fc3-8283745c2d2d","log","1740814672484417"
+"Generating audio for Alice segment 3 with voice alloy (413 chars)
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","435ce9f0-6ae0-41cd-981e-30aa78093def","log","1740814672484205"
+"Successfully decoded audio response for segment 2, size: 400800 bytes
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","f1d8fbf9-7085-4599-a3a7-ad0181a0ae20","log","1740814672484060"
+"shutdown","Shutdown","28714c86-4a06-459d-87cd-eafa8fc45496","a44ab963-8623-41c2-a17f-3b16ba1a0c8a","log","1740814568935369"
+"Segment 2 text length: 321, Preview: "It's also worth noting that this war is not just a..."
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","5aca776b-fa3f-4345-b52a-0a75ee01be52","log","1740814536946375"
+"Generating audio for Bob segment 2 with voice onyx (321 chars)
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","dc22bc06-63b1-4db5-a2fa-aa74d5e9e574","log","1740814536946131"
+"Successfully decoded audio response for segment 1, size: 488640 bytes
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","5027a03c-56d9-4cb1-807b-f2dbb0835ed9","log","1740814536945904"
+"Segment 1 text length: 391, Preview: "Yes, Bob. One of the challenges mentioned in the a..."
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","d8ff6718-0c7f-4b6f-8b83-4e3c12ede6fe","log","1740814531903427"
+"Generating audio for Alice segment 1 with voice alloy (391 chars)
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","9abe4ce6-a8c1-46a3-8e38-84331190ffaf","log","1740814531903255"
+"Successfully decoded audio response for segment 0, size: 362880 bytes
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","74985e55-3699-40f3-83f6-9c3a0e1ea867","log","1740814531902921"
+"Segment 0 text length: 301, Preview: "Absolutely, Alice. Now, let's discuss the challeng..."
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","58869e3f-0162-4df1-8e44-ba16cce3b8f9","log","1740814526962198"
+"Generating audio for Bob segment 0 with voice onyx (301 chars)
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","1fc01b77-26ba-4bbb-bb84-ede4e799b326","log","1740814526961966"
+"Split chunk 11 into 5 speaker segments
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","75d74ea9-7b5a-442a-85c1-75fd25c3bf07","log","1740814526961727"
+"Processing chunk 11 for job c64ab137-f340-4b1e-9e5e-fc77137aeaf8...
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","7e21d98c-98f2-4684-a586-2817c0f78af0","log","1740814526961428"
+"Process next chunk function called
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","8b9ed57a-1044-47ba-8749-57ec535fd0d4","log","1740814526958110"
+"Listening on http://localhost:9999/
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","4b213cb7-79dd-487a-946d-e6b00bb759cd","log","1740814526957967"
+"booted (time: 38ms)","Boot","28714c86-4a06-459d-87cd-eafa8fc45496","02dc4087-79ac-44f8-afde-ec7cd793d11a","log","1740814526957768"
+"Adding 2304ms delay before starting next chunk
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","bd7bf6fa-8675-422d-a3ca-e0ea66543a78","log","1740814523908078"
+"Found pending chunk 11, triggering processing
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","bfd93c09-7085-4bc6-b193-0e5f225f83d7","log","1740814523907829"
+"Job reconciliation result: {
+  job_id: "c64ab137-f340-4b1e-9e5e-fc77137aeaf8",
+  reconciled: true,
+  actual_errored: 0,
+  actual_pending: 7,
+  recorded_total: 18,
+  actual_completed: 11,
+  actual_processing: 0,
+  recorded_completed: 12
+}
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","6d5b7e10-3234-41a1-884e-0808e00efc0a","log","1740814523907585"
+"Job c64ab137-f340-4b1e-9e5e-fc77137aeaf8 appears out of sync: 11 completed chunks in DB vs 12 in job record
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","a5ed2bd6-eb17-4ca7-a743-aa284b62e9a7","log","1740814523906887"
+"Chunk 10 processed successfully with 5 segments
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","e950766e-42dc-40b6-b040-fa49bd7ddfb6","log","1740814523905799"
+"Chunk 10 processed. Job state: 12/18 chunks completed
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","02ae6547-a9e9-45a5-b91a-0e453c292451","log","1740814523905569"
+"Incrementing completed_chunks for job c64ab137-f340-4b1e-9e5e-fc77137aeaf8 with chunk 10...
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","f83d0580-f5b5-4fc1-9f20-7a313e2daba2","log","1740814523904869"
+"Successfully uploaded and verified audio file for chunk 10
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","e0f6b1b9-16e4-41ac-940a-2c8535c5eeab","log","1740814523904661"
+"shutdown","Shutdown","28714c86-4a06-459d-87cd-eafa8fc45496","593bd5d4-5aee-44f1-b37d-ce47c3ff21bc","log","1740814521829632"
+"Added segment 5: Alice (alloy), Length: 464160 bytes
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","216d8fdf-f792-4f6f-ab2e-5af9983a4af7","log","1740814518954952"
+"Added segment 4: Bob (onyx), Length: 381600 bytes
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","42e99a0e-5116-46b8-8fec-cbd7c0e2824e","log","1740814518954745"
+"Added segment 3: Alice (alloy), Length: 540960 bytes
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","97b6e5b8-6b3d-42ed-bd27-20b93bbbed11","log","1740814518954475"
+"Added segment 2: Bob (onyx), Length: 312480 bytes
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","d791eda7-b1b9-4059-a637-498032caad33","log","1740814518954268"
+"Added segment 1: Alice (alloy), Length: 451680 bytes
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","72c0e7d5-7a39-4e54-89c9-6ad61155ab50","log","1740814518954057"
+"Generated 5 audio segments for chunk 10
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","38201e5c-f125-4888-8701-3b7b5753a382","log","1740814518953856"
+"Successfully decoded audio response for segment 4, size: 464160 bytes
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","57f2a73f-ba6c-488f-90c1-09104fbe1736","log","1740814518953724"
+"Segment 4 text length: 375, Preview: "It's a tough situation indeed, Bob. On one hand, h..."
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","5824f9bb-f0c6-4b0c-bcd7-e440bd95be9e","log","1740814518944784"
+"Generating audio for Alice segment 4 with voice alloy (375 chars)
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","799c5e53-9c54-467b-bbe1-23fe764a40da","log","1740814518944528"
+"Successfully decoded audio response for segment 3, size: 381600 bytes
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","886aa358-c365-4aaf-8a1f-a4260dd09975","log","1740814518944256"
+"Segment 3 text length: 309, Preview: "That's right, Alice. President Zelenskyy is facing..."
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","99244e29-4c98-4e2e-ba38-01f4ce923739","log","1740814513895115"
+"Generating audio for Bob segment 3 with voice onyx (309 chars)
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","b39509b7-1cd9-4b70-b561-5827a4c7bd7b","log","1740814513894889"
+"Successfully decoded audio response for segment 2, size: 540960 bytes
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","881fa1a0-c930-400f-86e5-97f3cb6b8e1a","log","1740814513894699"
+"Segment 2 text length: 431, Preview: "Absolutely, Bob. Now, let's talk about the potenti..."
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","355a8513-c4c8-4975-a593-5077d20d3b49","log","1740814508886627"
+"Generating audio for Alice segment 2 with voice alloy (431 chars)
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","bb734b7d-3050-4c9c-a784-add460bb862a","log","1740814508886403"
+"Successfully decoded audio response for segment 1, size: 312480 bytes
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","0875e3e5-1c2e-4f39-a8ac-a2b4712f42d7","log","1740814508886157"
+"Segment 1 text length: 263, Preview: "It's interesting to note that President Trump has ..."
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","80b6170a-ad9e-4956-8aa1-b9e7ff1d2d63","log","1740814503892933"
+"Generating audio for Bob segment 1 with voice onyx (263 chars)
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","5dc11c22-6d1e-4180-8af6-6fc5323989b3","log","1740814503892679"
+"Successfully decoded audio response for segment 0, size: 451680 bytes
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","ae3b0980-cd93-4cee-9ab8-e659b4bddc14","log","1740814503892492"
+"Segment 0 text length: 364, Preview: "That's true, Bob. President Trump has emphasized t..."
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","90690bb9-7aaf-4677-8cef-c3d1792036de","log","1740814494013188"
+"Generating audio for Alice segment 0 with voice alloy (364 chars)
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","ae2efd94-2ad6-47a7-9551-d8803eed9651","log","1740814494013034"
+"Split chunk 10 into 5 speaker segments
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","9f484d98-2e7d-45fa-a7cd-7651a5cd782f","log","1740814494012844"
+"Processing chunk 10 for job c64ab137-f340-4b1e-9e5e-fc77137aeaf8...
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","3b05adf3-590c-484f-8c70-4297bb1a7d7a","log","1740814494012642"
+"Process next chunk function called
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","45625667-bf08-43f5-b52c-af30e7daa4d4","log","1740814494011858"
+"Listening on http://localhost:9999/
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","49fdcddf-c377-4a84-ac55-2b87a64e74d8","log","1740814494011635"
+"booted (time: 37ms)","Boot","28714c86-4a06-459d-87cd-eafa8fc45496","ee9ba1c9-0522-4ea6-a2a9-293885df2d96","log","1740814494011327"
+"shutdown","Shutdown","28714c86-4a06-459d-87cd-eafa8fc45496","3573de01-9353-433d-bd5f-2cd35ce5eb14","log","1740814493987616"
+"Adding 2188ms delay before starting next chunk
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","30164fa4-421d-44fb-9b06-91258b166439","log","1740814491793509"
+"Found pending chunk 10, triggering processing
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","1da26013-72ab-4216-8bd3-f1f60818526b","log","1740814491793372"
+"Job reconciliation result: {
+  job_id: "c64ab137-f340-4b1e-9e5e-fc77137aeaf8",
+  reconciled: true,
+  actual_errored: 0,
+  actual_pending: 8,
+  recorded_total: 18,
+  actual_completed: 10,
+  actual_processing: 0,
+  recorded_completed: 11
+}
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","89b7519e-d8d0-4ce5-b391-aa2efa49f076","log","1740814491793208"
+"Job c64ab137-f340-4b1e-9e5e-fc77137aeaf8 appears out of sync: 10 completed chunks in DB vs 11 in job record
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","bfcb9a2e-ddc6-4fe2-acd7-9b39b7aab4d9","log","1740814491793025"
+"Chunk 9 processed successfully with 5 segments
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","dd636c83-464c-462b-bcf8-f3314cfb0c83","log","1740814491792869"
+"Chunk 9 processed. Job state: 11/18 chunks completed
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","bc4f7770-f012-436f-86cf-8811fe33ceb9","log","1740814491792738"
+"Incrementing completed_chunks for job c64ab137-f340-4b1e-9e5e-fc77137aeaf8 with chunk 9...
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","5f2023a6-58fb-4bdf-90d7-7af839a18105","log","1740814491792604"
+"Successfully uploaded and verified audio file for chunk 9
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","bf869f87-1cd5-4e0b-84b4-b9b50c5aa3ec","log","1740814491792469"
+"Added segment 5: Bob (onyx), Length: 487680 bytes
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","aeab042b-8a68-469d-8694-df95e32b03bc","log","1740814491791705"
+"Added segment 4: Alice (alloy), Length: 452160 bytes
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","4e93b21f-3383-4c80-ab75-9ae752fad7ac","log","1740814491791574"
+"Added segment 3: Bob (onyx), Length: 462720 bytes
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","6f3087b2-3854-468d-8967-16efd6d97b0d","log","1740814491791429"
+"Added segment 2: Alice (alloy), Length: 587040 bytes
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","68503529-b2cb-4855-a9ef-bc2a8c8aac48","log","1740814491791224"
+"Added segment 1: Bob (onyx), Length: 122880 bytes
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","48ef348c-de25-4185-a91b-0da79e54aa20","log","1740814491791019"
+"Generated 5 audio segments for chunk 9
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","9387ef3f-7b7c-4dc8-aafb-550c95d41c1f","log","1740814491790765"
+"Successfully decoded audio response for segment 4, size: 487680 bytes
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","38903ce5-f3e0-4323-aed7-04d2906abbc4","log","1740814491790548"
+"Segment 4 text length: 390, Preview: "It seems that President Trump's position on Russia..."
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","1c10f487-8395-4cc5-9887-4fa01c64d4b9","log","1740814471761941"
+"Generating audio for Bob segment 4 with voice onyx (390 chars)
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","cacb1377-ae27-456d-ab1b-0b5a929f14b1","log","1740814471761748"
+"Successfully decoded audio response for segment 3, size: 452160 bytes
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","969f85c4-976c-435b-b78d-9690b6084981","log","1740814471761515"
+"shutdown","Shutdown","28714c86-4a06-459d-87cd-eafa8fc45496","428e5014-6298-406a-8d2b-8f6c29b31a42","log","1740814464885038"
+"Segment 3 text length: 361, Preview: "Absolutely, Bob. The big question here is whether ..."
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","0fcc03eb-3e42-470e-89cc-1bc462cd64fc","log","1740814461783365"
+"Generating audio for Alice segment 3 with voice alloy (361 chars)
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","49de9ae8-470c-4828-973c-c8c8a3c0d826","log","1740814461783220"
+"Successfully decoded audio response for segment 2, size: 462720 bytes
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","95250f6c-2578-450e-8705-35721e682e63","log","1740814461783089"
+"Segment 2 text length: 369, Preview: "That's right, Alice. This change in policy comes a..."
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","a04485a8-ad0a-4bf9-b045-6545059bbfdb","log","1740814456829037"
+"Generating audio for Bob segment 2 with voice onyx (369 chars)
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","384f2755-99ab-4214-a308-420ad7806484","log","1740814456828896"
+"Successfully decoded audio response for segment 1, size: 587040 bytes
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","ab8773b4-0603-42ae-8b61-f76f1a158c00","log","1740814456828697"
+"Segment 1 text length: 476, Preview: "Let's discuss the article: "U.S. Ukraine Policy Sh..."
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","248d2ac3-b3fd-4fbb-8f64-ec048cfe8961","log","1740814446770223"
+"Generating audio for Alice segment 1 with voice alloy (476 chars)
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","e7755901-0ad8-4418-b5ae-a6358bac5292","log","1740814446770015"
+"Successfully decoded audio response for segment 0, size: 122880 bytes
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","b3c27301-a990-4e58-850c-3da5392b4b8c","log","1740814446769736"
+"Segment 0 text length: 105, Preview: "And stay tuned for our next article, where we'll b..."
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","0afd3e48-f18a-47f7-b3d1-0be02826573f","log","1740814446765668"
+"Generating audio for Bob segment 0 with voice onyx (105 chars)
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","c8200066-becf-45cc-b616-489bf6de093b","log","1740814446765424"
+"Split chunk 9 into 5 speaker segments
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","c9d294fc-2331-4b01-9e00-8b9eb1dd752c","log","1740814446764325"
+"Processing chunk 9 for job c64ab137-f340-4b1e-9e5e-fc77137aeaf8...
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","3a2b1629-d2a5-461b-a581-f8f3f1c556de","log","1740814446764148"
+"Process next chunk function called
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","ba417454-c859-405a-9278-52127b82dac8","log","1740814446763994"
+"Listening on http://localhost:9999/
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","3f2e7558-b252-4b43-b5af-5c340a9f3d6b","log","1740814446763765"
+"booted (time: 37ms)","Boot","28714c86-4a06-459d-87cd-eafa8fc45496","bf31cd26-9272-45b1-83ad-6f1dce68e867","log","1740814446763438"
+"Next chunk trigger response status: 200
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","32cdb192-147b-4619-b7bf-3a30722b63c0","log","1740814444913289"
+"Adding 2305ms delay before starting next chunk
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","d1d55880-28a5-4f0b-92d4-6d2584374a62","log","1740814443875657"
+"Found pending chunk 9, triggering processing
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","cd2458f6-70ec-453b-a9ef-718ca1b46394","log","1740814443875506"
+"Job reconciliation result: {
+  job_id: "c64ab137-f340-4b1e-9e5e-fc77137aeaf8",
+  reconciled: true,
+  actual_errored: 0,
+  actual_pending: 9,
+  recorded_total: 18,
+  actual_completed: 9,
+  actual_processing: 0,
+  recorded_completed: 10
+}
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","ba6ee0d2-d081-47e0-a951-5f1b5ad2bc78","log","1740814443875336"
+"Job c64ab137-f340-4b1e-9e5e-fc77137aeaf8 appears out of sync: 9 completed chunks in DB vs 10 in job record
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","ac7565d0-f29b-452e-9ef8-fbd71ee5d213","log","1740814443875189"
+"Chunk 8 processed successfully with 6 segments
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","5979fc39-2c7b-4fb2-b385-914633523347","log","1740814443874766"
+"Chunk 8 processed. Job state: 10/18 chunks completed
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","dba74b89-82d9-49d5-abd8-1d97872452d1","log","1740814443874540"
+"Incrementing completed_chunks for job c64ab137-f340-4b1e-9e5e-fc77137aeaf8 with chunk 8...
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","77f95e05-238f-428a-83b1-8bb5fe3ac219","log","1740814443874352"
+"Successfully uploaded and verified audio file for chunk 8
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","b33d6a11-0990-4a58-bab1-36ceadbf34ec","log","1740814443873807"
+"Added segment 6: Alice (alloy), Length: 237120 bytes
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","6ff34098-6f55-436f-bb0c-7f60673477eb","log","1740814438917913"
+"Added segment 5: Bob (onyx), Length: 239040 bytes
+","Log","28714c86-4a06-459d-87cd-eafa8fc45496","afd07378-af36-44f0-bbcc-15a1a9f52390","log","1740814438917652"
