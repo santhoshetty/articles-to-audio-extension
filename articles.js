@@ -168,6 +168,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             console.log('Podcast generated successfully:', podcastData);
 
+            // Clear the loading state wrapper
+            bottomAudioContainer.innerHTML = '';
+
             // Extract the file path from the audio_url
             const audioUrlPath = new URL(podcastData.audio_url).pathname;
             const fileName = audioUrlPath.split('/').pop();
@@ -199,15 +202,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             bottomAudioContainer.innerHTML = `
                 <div class="audio-player-wrapper">
                     <div class="podcast-info">
-                        <h3>Generated Podcast</h3>
-                        <p>Articles: ${articles.map(a => a.title).join(', ')}</p>
+                        <h3>Your Podcast is Ready!</h3>
                     </div>
-                    <audio 
-                        class="podcast-audio" 
-                        controls 
-                        src="${audioUrl}"
-                        preload="metadata"
-                    >
+                    <audio controls class="podcast-audio" src="${audioUrl}">
                         Your browser does not support the audio element.
                     </audio>
                 </div>
@@ -1430,3 +1427,296 @@ async function displayArticles(articles) {
         }
     });
 }
+
+// Function to check if the GCP migration feature flag is enabled
+async function isGcpMigrationEnabled() {
+    // Default to enabled for now - can be replaced with actual feature flag check once available
+    return true;
+    
+    // Uncomment and use this when feature flag table is available
+    /*
+    const { data } = await supabase
+        .from('feature_flags')
+        .select('enabled')
+        .eq('name', 'gcp_podcast_migration')
+        .single();
+        
+    return data?.enabled || false;
+    */
+}
+
+// New approach - Enqueue podcast job and poll for status
+async function startPodcastGeneration(articles, maxRetries = 3) {
+    let retries = 0;
+    
+    while (retries < maxRetries) {
+        try {
+            const { data, error } = await supabase.functions.invoke('enqueue-podcast-job', {
+                body: { articles }
+            });
+            
+            if (error) throw error;
+            return data.job_id;
+        } catch (error) {
+            retries++;
+            console.error(`Error starting podcast generation (attempt ${retries}/${maxRetries}):`, error);
+            
+            if (retries >= maxRetries) {
+                throw new Error(`Failed to start podcast generation after ${maxRetries} attempts: ${error.message}`);
+            }
+            
+            // Wait before retrying (exponential backoff)
+            await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, retries - 1)));
+        }
+    }
+}
+
+// Check podcast job status
+async function checkPodcastStatus(jobId) {
+    const { data, error } = await supabase.functions.invoke('check-podcast-status', {
+        method: 'GET',
+        query: { job_id: jobId }
+    });
+    
+    if (error) throw error;
+    return data;
+}
+
+// Poll for podcast status updates
+async function pollPodcastStatus(jobId, onStatusUpdate, intervalMs = 5000) {
+    // Initialize polling
+    const poll = async () => {
+        try {
+            const status = await checkPodcastStatus(jobId);
+            
+            // Call the status update callback with the current status
+            onStatusUpdate(status);
+            
+            // If job is still in progress, continue polling
+            if (['pending', 'processing', 'script_generated'].includes(status.job?.status)) {
+                setTimeout(poll, intervalMs);
+            }
+        } catch (error) {
+            console.error('Error polling podcast status:', error);
+            onStatusUpdate({ error: error.message });
+        }
+    };
+    
+    // Start polling
+    poll();
+}
+
+// Function to update UI based on podcast status
+function updatePodcastUI(statusData) {
+    console.log('Updating podcast UI with status:', statusData);
+    
+    // Create or get the bottom audio player container
+    let bottomAudioContainer = document.getElementById('bottom-audio-player');
+    if (!bottomAudioContainer) {
+        bottomAudioContainer = document.createElement('div');
+        bottomAudioContainer.id = 'bottom-audio-player';
+        bottomAudioContainer.className = 'fixed-bottom-player';
+        document.body.appendChild(bottomAudioContainer);
+    }
+
+    // Handle error case
+    if (statusData.error) {
+        bottomAudioContainer.innerHTML = `
+            <div class="audio-player-wrapper">
+                <div class="status-indicator failed">
+                    <h3>Error Generating Podcast</h3>
+                    <p>${statusData.error}</p>
+                </div>
+            </div>
+        `;
+        return;
+    }
+
+    // Get job status and data
+    const { job, audio_url, logs } = statusData;
+    
+    // If job is complete and we have an audio URL
+    if (job.status === 'completed' && audio_url) {
+        bottomAudioContainer.innerHTML = `
+            <div class="audio-player-wrapper">
+                <div class="status-indicator completed">
+                    <h3>Your Podcast is Ready!</h3>
+                </div>
+                <div class="podcast-info">
+                    <p>Generated on ${new Date(job.processing_completed_at).toLocaleString()}</p>
+                </div>
+                <audio controls class="podcast-audio" src="${audio_url}">
+                    Your browser does not support the audio element.
+                </audio>
+            </div>
+        `;
+    } else {
+        // Show in-progress status
+        bottomAudioContainer.innerHTML = `
+            <div class="audio-player-wrapper">
+                <div class="status-indicator ${job.status || 'pending'}">
+                    <h3>Podcast Status: ${job.status || 'Pending'}</h3>
+                    <p>Created: ${new Date(job.created_at).toLocaleString()}</p>
+                    ${job.processing_started_at ? `<p>Processing started: ${new Date(job.processing_started_at).toLocaleString()}</p>` : ''}
+                </div>
+                ${logs && logs.length > 0 ? `
+                <div class="progress-logs">
+                    <h4>Progress:</h4>
+                    <ul>
+                        ${logs.map(log => `<li>${new Date(log.timestamp).toLocaleTimeString()}: ${log.message}</li>`).join('')}
+                    </ul>
+                </div>` : ''}
+            </div>
+        `;
+    }
+}
+
+// Update the existing podcast generation logic to use the new approach
+document.getElementById('generatePodcast').addEventListener('click', async () => {
+    try {
+        const selectedCheckboxes = document.querySelectorAll('.article-checkbox:checked');
+        if (selectedCheckboxes.length === 0) {
+            alert('Please select at least one article to generate a podcast.');
+            return;
+        }
+
+        // Get selected article IDs
+        const selectedArticleIds = Array.from(selectedCheckboxes).map(checkbox => checkbox.dataset.articleId);
+        
+        // Show loading state
+        document.getElementById('loadingIcon').style.display = 'inline-block';
+        document.getElementById('generatePodcast').disabled = true;
+        
+        // Get the articles data
+        const articles = [];
+        for (const articleId of selectedArticleIds) {
+            const { data, error } = await supabase
+                .from('articles')
+                .select('*')
+                .eq('id', articleId)
+                .single();
+
+            if (error) {
+                console.error('Error fetching article:', error);
+                continue;
+            }
+
+            articles.push(data);
+        }
+
+        // Check if GCP migration is enabled
+        const useGcp = await isGcpMigrationEnabled();
+        
+        if (useGcp) {
+            // Create or get the bottom audio player container
+            let bottomAudioContainer = document.getElementById('bottom-audio-player');
+            if (!bottomAudioContainer) {
+                bottomAudioContainer = document.createElement('div');
+                bottomAudioContainer.id = 'bottom-audio-player';
+                bottomAudioContainer.className = 'fixed-bottom-player';
+                document.body.appendChild(bottomAudioContainer);
+            }
+            
+            // Show initial loading state
+            bottomAudioContainer.innerHTML = `
+                <div class="audio-player-wrapper">
+                    <div class="status-indicator pending">
+                        <h3>Starting Podcast Generation...</h3>
+                    </div>
+                </div>
+            `;
+            
+            // Start GCP-based podcast generation and get job ID
+            const jobId = await startPodcastGeneration(articles);
+            console.log('Podcast generation job started with ID:', jobId);
+            
+            // Update UI with initial job status
+            bottomAudioContainer.innerHTML = `
+                <div class="audio-player-wrapper">
+                    <div class="status-indicator pending">
+                        <h3>Podcast Generation Started</h3>
+                        <p>Job ID: ${jobId}</p>
+                        <p>Starting processing...</p>
+                    </div>
+                </div>
+            `;
+            
+            // Start polling for status updates
+            pollPodcastStatus(jobId, updatePodcastUI);
+        } else {
+            // Use legacy workflow
+            console.log('No existing podcast found, generating new one...');
+            const { data: podcastData, error: generationError } = await supabase.functions.invoke('generate-podcast', {
+                body: { articles }
+            });
+
+            if (generationError) {
+                throw new Error(`Failed to generate podcast: ${generationError.message}`);
+            }
+
+            console.log('Podcast generated successfully:', podcastData);
+
+            // Clear the loading state wrapper
+            bottomAudioContainer.innerHTML = '';
+
+            // Extract the file path from the audio_url
+            const audioUrlPath = new URL(podcastData.audio_url).pathname;
+            const fileName = audioUrlPath.split('/').pop();
+            
+            // Get the signed URL for the audio file
+            const { data: signedUrlData, error: signedUrlError } = await supabase
+                .storage
+                .from('audio-files')
+                .createSignedUrl(`public/${fileName}`, 604800);
+
+            if (signedUrlError) {
+                console.error('Failed to get signed URL:', signedUrlError);
+                throw new Error(`Failed to get signed URL: ${signedUrlError.message}`);
+            }
+
+            const audioUrl = signedUrlData.signedUrl;
+            console.log('Got signed URL for audio:', audioUrl);
+
+            // Create or get the bottom audio player container
+            let bottomAudioContainer = document.getElementById('bottom-audio-player');
+            if (!bottomAudioContainer) {
+                bottomAudioContainer = document.createElement('div');
+                bottomAudioContainer.id = 'bottom-audio-player';
+                bottomAudioContainer.className = 'fixed-bottom-player';
+                document.body.appendChild(bottomAudioContainer);
+            }
+
+            // Update the audio player with the new podcast
+            bottomAudioContainer.innerHTML = `
+                <div class="audio-player-wrapper">
+                    <div class="podcast-info">
+                        <h3>Your Podcast is Ready!</h3>
+                    </div>
+                    <audio controls class="podcast-audio" src="${audioUrl}">
+                        Your browser does not support the audio element.
+                    </audio>
+                </div>
+            `;
+        }
+    } catch (error) {
+        console.error('Error generating podcast:', error);
+        alert(`Error generating podcast: ${error.message}`);
+        
+        // Show error in the audio player if it exists
+        const bottomAudioContainer = document.getElementById('bottom-audio-player');
+        if (bottomAudioContainer) {
+            bottomAudioContainer.innerHTML = `
+                <div class="audio-player-wrapper">
+                    <div class="status-indicator failed">
+                        <h3>Error Generating Podcast</h3>
+                        <p>${error.message}</p>
+                    </div>
+                </div>
+            `;
+        }
+    } finally {
+        // Hide loading icon and re-enable button
+        document.getElementById('loadingIcon').style.display = 'none';
+        document.getElementById('generatePodcast').disabled = false;
+    }
+});

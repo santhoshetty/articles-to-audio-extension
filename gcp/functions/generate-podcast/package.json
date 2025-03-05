@@ -1,0 +1,21 @@
+{
+  "name": "generate-podcast",
+  "version": "1.0.0",
+  "description": "GCP Cloud Function for processing podcast audio",
+  "main": "index.js",
+  "scripts": {
+    "start": "functions-framework --target=processPodcastAudio",
+    "deploy": "gcloud functions deploy generate-podcast --gen2 --runtime=nodejs18 --region=us-central1 --source=. --entry-point=processPodcastAudio --trigger-http --timeout=3600s"
+  },
+  "dependencies": {
+    "@google-cloud/functions-framework": "^3.1.0",
+    "@google-cloud/pubsub": "^3.7.1",
+    "@google-cloud/secret-manager": "^4.2.2",
+    "@supabase/supabase-js": "^2.39.3",
+    "axios": "^1.8.1",
+    "openai": "^4.28.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
