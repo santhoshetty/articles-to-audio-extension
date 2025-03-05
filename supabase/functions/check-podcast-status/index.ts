@@ -2,13 +2,38 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts"
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.3"
 
 serve(async (req) => {
+  // Handle OPTIONS requests for CORS
+  if (req.method === 'OPTIONS') {
+    return new Response(null, {
+      headers: {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type'
+      }
+    });
+  }
+
   try {
     // Log request received
-    console.log("Check podcast status function called");
+    console.log("Check podcast status function called with method:", req.method);
     
-    // Get the job ID from the request
-    const url = new URL(req.url);
-    const jobId = url.searchParams.get('job_id');
+    // Get the job ID from the request (support both GET and POST)
+    let jobId;
+    
+    if (req.method === 'GET') {
+      const url = new URL(req.url);
+      jobId = url.searchParams.get('job_id');
+    } else if (req.method === 'POST') {
+      try {
+        const body = await req.json();
+        jobId = body.job_id;
+      } catch (e) {
+        console.error("Error parsing JSON body:", e);
+        throw new Error("Invalid JSON body");
+      }
+    } else {
+      throw new Error(`Unsupported method: ${req.method}`);
+    }
     
     if (!jobId) {
       console.error("Missing job ID");
@@ -65,7 +90,10 @@ serve(async (req) => {
     // Get job status
     const { data: jobData, error: jobError } = await supabaseClient
       .from('podcast_jobs')
-      .select('*, processing_logs(*)')
+      .select(`
+        *,
+        processing_logs!processing_logs_job_id_fkey(*)
+      `)
       .eq('id', jobId)
       .eq('user_id', userId)
       .single();
@@ -114,6 +142,7 @@ serve(async (req) => {
           processing_completed_at: jobData.processing_completed_at
         },
         audio: audioData,
+        audio_url: audioData?.url || null,
         logs: jobData.processing_logs,
         success: true 
       }),

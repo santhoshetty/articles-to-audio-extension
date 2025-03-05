@@ -17,215 +17,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         container.innerHTML = '<div class="no-articles">Please sign in to view your articles.</div>';
     }
 
+    // Set up date filtering
+    setupDateFiltering();
+
     // Add Generate Podcast button handler
     const generatePodcastBtn = document.getElementById('generatePodcast');
     console.log('Generate Podcast button:', generatePodcastBtn);
     
-    generatePodcastBtn.addEventListener('click', async () => {
-        console.log('Generate Podcast button clicked');
-        const selectedArticles = document.querySelectorAll('.article-checkbox:checked');
-        console.log('Selected articles count:', selectedArticles.length);
-
-        // Check if at least one article is selected
-        if (selectedArticles.length === 0) {
-            alert('Please select at least one article to generate a podcast.');
-            return;
-        }
-
-        // Show loading state
-        generatePodcastBtn.disabled = true;
-        generatePodcastBtn.textContent = 'Generating...';
-        const loadingIcon = document.getElementById('loadingIcon');
-        if (loadingIcon) {
-            loadingIcon.style.display = 'inline';
-        }
-
-        try {
-            const articles = Array.from(selectedArticles).map(checkbox => {
-                const articleId = checkbox.dataset.articleId;
-                const articleDiv = checkbox.closest('.article');
-                
-                if (!articleDiv) {
-                    console.error('Could not find article div for checkbox:', articleId);
-                    throw new Error('Failed to process selected article');
-                }
-
-                const title = articleDiv.querySelector('.article-title')?.textContent || 'Untitled';
-                const content = articleDiv.querySelector('.article-content')?.textContent || '';
-                const summary = articleDiv.querySelector('.article-summary')?.textContent || '';
-
-                console.log('Processing article:', { 
-                    id: articleId,
-                    title: title,
-                    contentLength: content.length,
-                    summaryLength: summary.length
-                });
-
-                return {
-                    id: articleId,
-                    title: title,
-                    content: content,
-                    summary: summary
-                };
-            });
-
-            console.log('Selected articles:', articles.map(a => a.title).join(', '));
-
-            // Check if a podcast already exists for these articles
-            const articleIds = articles.map(a => a.id);
-            console.log('Checking for existing podcast for articles:', articleIds);
-
-            const { data: existingPodcasts, error: podcastError } = await supabase
-                .from('article_audio')
-                .select(`
-                    audio_id,
-                    audio_files (
-                        file_url
-                    )
-                `)
-                .in('article_id', articleIds);
-
-            if (podcastError) {
-                throw new Error(`Failed to check existing podcasts: ${podcastError.message}`);
-            }
-
-            // Group podcasts by audio_id to find if all articles share the same podcast
-            const podcastGroups = {};
-            existingPodcasts.forEach(entry => {
-                if (!podcastGroups[entry.audio_id]) {
-                    podcastGroups[entry.audio_id] = {
-                        count: 0,
-                        file_url: entry.audio_files?.file_url
-                    };
-                }
-                podcastGroups[entry.audio_id].count++;
-            });
-
-            // Find if there's a podcast that contains all selected articles
-            const existingPodcast = Object.entries(podcastGroups)
-                .find(([_, group]) => group.count === articleIds.length);
-
-            if (existingPodcast) {
-                console.log('Found existing podcast:', existingPodcast);
-                const [_, podcastData] = existingPodcast;
-
-                // Get the signed URL for the audio file
-                const audioUrlPath = new URL(podcastData.file_url).pathname;
-                const fileName = audioUrlPath.split('/').pop();
-                
-                const { data: signedUrlData, error: signedUrlError } = await supabase
-                    .storage
-                    .from('audio-files')
-                    .createSignedUrl(`public/${fileName}`, 604800);
-
-                if (signedUrlError) {
-                    console.error('Failed to get signed URL:', signedUrlError);
-                    throw new Error(`Failed to get signed URL: ${signedUrlError.message}`);
-                }
-
-                const audioUrl = signedUrlData.signedUrl;
-                console.log('Got signed URL for existing audio:', audioUrl);
-
-                // Update the audio player with the existing podcast
-                let bottomAudioContainer = document.getElementById('bottom-audio-player');
-                if (!bottomAudioContainer) {
-                    bottomAudioContainer = document.createElement('div');
-                    bottomAudioContainer.id = 'bottom-audio-player';
-                    bottomAudioContainer.className = 'fixed-bottom-player';
-                    document.body.appendChild(bottomAudioContainer);
-                }
-
-                bottomAudioContainer.innerHTML = `
-                    <div class="audio-player-wrapper">
-                        <div class="podcast-info">
-                            <h3>Existing Podcast</h3>
-                            <p>Articles: ${articles.map(a => a.title).join(', ')}</p>
-                        </div>
-                        <audio 
-                            class="podcast-audio" 
-                            controls 
-                            src="${audioUrl}"
-                            preload="metadata"
-                        >
-                            Your browser does not support the audio element.
-                        </audio>
-                    </div>
-                `;
-
-                alert('Loading existing podcast for selected articles.');
-                return;
-            }
-
-            // If no existing podcast found, generate a new one
-            console.log('No existing podcast found, generating new one...');
-            const { data: podcastData, error: generationError } = await supabase.functions.invoke('generate-podcast', {
-                body: { articles }
-            });
-
-            if (generationError) {
-                throw new Error(`Failed to generate podcast: ${generationError.message}`);
-            }
-
-            console.log('Podcast generated successfully:', podcastData);
-
-            // Clear the loading state wrapper
-            bottomAudioContainer.innerHTML = '';
-
-            // Extract the file path from the audio_url
-            const audioUrlPath = new URL(podcastData.audio_url).pathname;
-            const fileName = audioUrlPath.split('/').pop();
-            
-            // Get the signed URL for the audio file
-            const { data: signedUrlData, error: signedUrlError } = await supabase
-                .storage
-                .from('audio-files')
-                .createSignedUrl(`public/${fileName}`, 604800);
-
-            if (signedUrlError) {
-                console.error('Failed to get signed URL:', signedUrlError);
-                throw new Error(`Failed to get signed URL: ${signedUrlError.message}`);
-            }
-
-            const audioUrl = signedUrlData.signedUrl;
-            console.log('Got signed URL for audio:', audioUrl);
-
-            // Create or get the bottom audio player container
-            let bottomAudioContainer = document.getElementById('bottom-audio-player');
-            if (!bottomAudioContainer) {
-                bottomAudioContainer = document.createElement('div');
-                bottomAudioContainer.id = 'bottom-audio-player';
-                bottomAudioContainer.className = 'fixed-bottom-player';
-                document.body.appendChild(bottomAudioContainer);
-            }
-
-            // Update the audio player with the new podcast
-            bottomAudioContainer.innerHTML = `
-                <div class="audio-player-wrapper">
-                    <div class="podcast-info">
-                        <h3>Your Podcast is Ready!</h3>
-                    </div>
-                    <audio controls class="podcast-audio" src="${audioUrl}">
-                        Your browser does not support the audio element.
-                    </audio>
-                </div>
-            `;
-
-            // Show success message
-            alert('Podcast generated successfully!');
-
-        } catch (error) {
-            console.error('Error generating podcast:', error);
-            alert('Failed to generate podcast. Please try again.');
-        } finally {
-            // Reset button state
-            generatePodcastBtn.disabled = false;
-            generatePodcastBtn.textContent = 'Generate Podcast';
-            if (loadingIcon) {
-                loadingIcon.style.display = 'none';
-            }
-        }
-    });
-
     // Add event listener for the All Podcasts button
     document.getElementById('allPodcasts').addEventListener('click', async () => {
         const podcastTable = document.getElementById('podcast-table');
@@ -239,6 +37,37 @@ document.addEventListener('DOMContentLoaded', async () => {
             podcastTable.style.display = 'none';
         }
     });
+
+    // Add CSS for the delete button and deleting state
+    const style = document.createElement('style');
+    style.textContent = `
+        .delete-podcast-btn {
+            background-color: #ff4d4d;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 5px 10px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background-color 0.3s;
+        }
+        
+        .delete-podcast-btn:hover {
+            background-color: #ff0000;
+        }
+        
+        tr.deleting {
+            opacity: 0.5;
+            background-color: #ffeeee;
+            transition: all 0.3s;
+        }
+        
+        .podcast-table th, .podcast-table td {
+            padding: 10px;
+            border-bottom: 1px solid #ddd;
+        }
+    `;
+    document.head.appendChild(style);
 });
 
 // Session management
@@ -1164,12 +993,15 @@ async function loadPodcasts(podcastList) {
             articlesCell.appendChild(articlesList);
             row.appendChild(articlesCell);
 
+            // Add delete button to the row
+            addDeleteButtonToPodcastRow(row, podcast);
+
             podcastList.appendChild(row);
         }
 
         if (podcastList.children.length === 0) {
             const emptyRow = document.createElement('tr');
-            emptyRow.innerHTML = '<td colspan="2" style="text-align: center;">No podcasts found</td>';
+            emptyRow.innerHTML = '<td colspan="3" style="text-align: center;">No podcasts found</td>';
             podcastList.appendChild(emptyRow);
         }
 
@@ -1474,8 +1306,8 @@ async function startPodcastGeneration(articles, maxRetries = 3) {
 // Check podcast job status
 async function checkPodcastStatus(jobId) {
     const { data, error } = await supabase.functions.invoke('check-podcast-status', {
-        method: 'GET',
-        query: { job_id: jobId }
+        method: 'POST',
+        body: { job_id: jobId }
     });
     
     if (error) throw error;
@@ -1532,11 +1364,14 @@ function updatePodcastUI(statusData) {
         return;
     }
 
-    // Get job status and data
-    const { job, audio_url, logs } = statusData;
+    // Get job status and data - check both audio and audio_url properties
+    const { job, audio, audio_url } = statusData;
+    
+    // Determine which audio URL to use
+    const finalAudioUrl = audio_url || (audio && audio.url);
     
     // If job is complete and we have an audio URL
-    if (job.status === 'completed' && audio_url) {
+    if (job && job.status === 'completed' && finalAudioUrl) {
         bottomAudioContainer.innerHTML = `
             <div class="audio-player-wrapper">
                 <div class="status-indicator completed">
@@ -1545,12 +1380,12 @@ function updatePodcastUI(statusData) {
                 <div class="podcast-info">
                     <p>Generated on ${new Date(job.processing_completed_at).toLocaleString()}</p>
                 </div>
-                <audio controls class="podcast-audio" src="${audio_url}">
+                <audio controls class="podcast-audio" src="${finalAudioUrl}">
                     Your browser does not support the audio element.
                 </audio>
             </div>
         `;
-    } else {
+    } else if (job) {
         // Show in-progress status
         bottomAudioContainer.innerHTML = `
             <div class="audio-player-wrapper">
@@ -1559,13 +1394,23 @@ function updatePodcastUI(statusData) {
                     <p>Created: ${new Date(job.created_at).toLocaleString()}</p>
                     ${job.processing_started_at ? `<p>Processing started: ${new Date(job.processing_started_at).toLocaleString()}</p>` : ''}
                 </div>
-                ${logs && logs.length > 0 ? `
+                ${statusData.logs && statusData.logs.length > 0 ? `
                 <div class="progress-logs">
                     <h4>Progress:</h4>
                     <ul>
-                        ${logs.map(log => `<li>${new Date(log.timestamp).toLocaleTimeString()}: ${log.message}</li>`).join('')}
+                        ${statusData.logs.map(log => `<li>${new Date(log.timestamp).toLocaleTimeString()}: ${log.message}</li>`).join('')}
                     </ul>
                 </div>` : ''}
+            </div>
+        `;
+    } else {
+        // Handle case where job data is missing or invalid
+        bottomAudioContainer.innerHTML = `
+            <div class="audio-player-wrapper">
+                <div class="status-indicator failed">
+                    <h3>Error Generating Podcast</h3>
+                    <p>Invalid job status data returned from server</p>
+                </div>
             </div>
         `;
     }
@@ -1573,22 +1418,24 @@ function updatePodcastUI(statusData) {
 
 // Update the existing podcast generation logic to use the new approach
 document.getElementById('generatePodcast').addEventListener('click', async () => {
+    // Define all variables at the beginning
+    let selectedCheckboxes, selectedArticleIds, articles = [], bottomAudioContainer;
+    
     try {
-        const selectedCheckboxes = document.querySelectorAll('.article-checkbox:checked');
+        selectedCheckboxes = document.querySelectorAll('.article-checkbox:checked');
         if (selectedCheckboxes.length === 0) {
             alert('Please select at least one article to generate a podcast.');
             return;
         }
 
         // Get selected article IDs
-        const selectedArticleIds = Array.from(selectedCheckboxes).map(checkbox => checkbox.dataset.articleId);
+        selectedArticleIds = Array.from(selectedCheckboxes).map(checkbox => checkbox.dataset.articleId);
         
         // Show loading state
         document.getElementById('loadingIcon').style.display = 'inline-block';
         document.getElementById('generatePodcast').disabled = true;
         
         // Get the articles data
-        const articles = [];
         for (const articleId of selectedArticleIds) {
             const { data, error } = await supabase
                 .from('articles')
@@ -1604,19 +1451,19 @@ document.getElementById('generatePodcast').addEventListener('click', async () =>
             articles.push(data);
         }
 
+        // Create or get the bottom audio player container - define this once at the beginning
+        bottomAudioContainer = document.getElementById('bottom-audio-player');
+        if (!bottomAudioContainer) {
+            bottomAudioContainer = document.createElement('div');
+            bottomAudioContainer.id = 'bottom-audio-player';
+            bottomAudioContainer.className = 'fixed-bottom-player';
+            document.body.appendChild(bottomAudioContainer);
+        }
+
         // Check if GCP migration is enabled
         const useGcp = await isGcpMigrationEnabled();
         
         if (useGcp) {
-            // Create or get the bottom audio player container
-            let bottomAudioContainer = document.getElementById('bottom-audio-player');
-            if (!bottomAudioContainer) {
-                bottomAudioContainer = document.createElement('div');
-                bottomAudioContainer.id = 'bottom-audio-player';
-                bottomAudioContainer.className = 'fixed-bottom-player';
-                document.body.appendChild(bottomAudioContainer);
-            }
-            
             // Show initial loading state
             bottomAudioContainer.innerHTML = `
                 <div class="audio-player-wrapper">
@@ -1677,16 +1524,7 @@ document.getElementById('generatePodcast').addEventListener('click', async () =>
             const audioUrl = signedUrlData.signedUrl;
             console.log('Got signed URL for audio:', audioUrl);
 
-            // Create or get the bottom audio player container
-            let bottomAudioContainer = document.getElementById('bottom-audio-player');
-            if (!bottomAudioContainer) {
-                bottomAudioContainer = document.createElement('div');
-                bottomAudioContainer.id = 'bottom-audio-player';
-                bottomAudioContainer.className = 'fixed-bottom-player';
-                document.body.appendChild(bottomAudioContainer);
-            }
-
-            // Update the audio player with the new podcast
+            // Update the audio player with the new podcast - use the already defined bottomAudioContainer
             bottomAudioContainer.innerHTML = `
                 <div class="audio-player-wrapper">
                     <div class="podcast-info">
@@ -1718,5 +1556,302 @@ document.getElementById('generatePodcast').addEventListener('click', async () =>
         // Hide loading icon and re-enable button
         document.getElementById('loadingIcon').style.display = 'none';
         document.getElementById('generatePodcast').disabled = false;
+    }
+});
+
+// Helper function to check if a file exists in storage
+async function checkFileExists(bucket, path) {
+    try {
+        console.log(`Checking if file exists in bucket: ${bucket}, path: ${path}`);
+        
+        // Try to get file metadata, which will fail if file doesn't exist
+        const { data, error } = await supabase
+            .storage
+            .from(bucket)
+            .createSignedUrl(path, 10); // Short expiry just to check existence
+            
+        if (error && error.message.includes('Not Found')) {
+            console.log('File does not exist in storage');
+            return false;
+        }
+        
+        // If we get here, file exists
+        console.log('File exists in storage');
+        return true;
+    } catch (error) {
+        console.error('Error checking file existence:', error);
+        // Assume file doesn't exist on error
+        return false;
+    }
+}
+
+// Update the delete podcast function to check file existence
+async function deletePodcast(audioId) {
+    try {
+        console.log('Starting complete podcast deletion for audioId:', audioId);
+        
+        // 1. Get the audio file information
+        const { data: audioFile, error: audioError } = await supabase
+            .from('audio_files')
+            .select('file_url')
+            .eq('id', audioId)
+            .single();
+            
+        if (audioError) {
+            console.error('Error fetching audio file info:', audioError);
+            throw new Error(`Failed to fetch audio file info: ${audioError.message}`);
+        }
+        
+        if (!audioFile) {
+            console.error('Audio file not found in database');
+            throw new Error('Audio file not found in database');
+        }
+        
+        // 2. Delete the actual file from storage if it exists
+        // Extract the filename from the file_url
+        const storagePath = 'public/' + audioFile.file_url.split('/').pop();
+        
+        // Check if file exists before trying to delete
+        const fileExists = await checkFileExists('audio-files', storagePath);
+        
+        if (fileExists) {
+            console.log('Removing file from storage:', storagePath);
+            const { error: storageError } = await supabase
+                .storage
+                .from('audio-files')
+                .remove([storagePath]);
+                
+            if (storageError) {
+                console.error('Error removing file from storage:', storageError);
+                // Continue with deletion even if storage removal fails
+            }
+        } else {
+            console.log('File not found in storage, skipping file deletion');
+        }
+        
+        // 3. Delete related entries in article_audio table
+        console.log('Removing article_audio entries for audioId:', audioId);
+        const { error: articleAudioError } = await supabase
+            .from('article_audio')
+            .delete()
+            .eq('audio_id', audioId);
+            
+        if (articleAudioError) {
+            console.error('Error removing article_audio entries:', articleAudioError);
+            throw new Error(`Failed to remove article_audio entries: ${articleAudioError.message}`);
+        }
+        
+        // 4. Delete related entries in podcast_jobs table (if exists)
+        try {
+            console.log('Removing podcast_jobs entries for audioId:', audioId);
+            const { error: jobsError } = await supabase
+                .from('podcast_jobs')
+                .delete()
+                .eq('audio_id', audioId);
+                
+            if (jobsError) {
+                console.error('Error removing podcast_jobs entries:', jobsError);
+                // Continue with deletion even if jobs removal fails
+            }
+        } catch (podcastJobsError) {
+            console.error('Error with podcast_jobs table, might not exist:', podcastJobsError);
+            // Continue with deletion even if table doesn't exist
+        }
+        
+        // 5. Check for GCP references and clean those up if enabled
+        const useGcp = await isGcpMigrationEnabled();
+        if (useGcp) {
+            console.log('Cleaning up any GCP resources...');
+            try {
+                // Try a safer approach by checking if the function exists
+                const { data: functions } = await supabase.functions.list();
+                const hasCleanupFunction = functions.some(f => f.name === 'cleanup-gcp-resources');
+                
+                if (hasCleanupFunction) {
+                    const { error: gcpCleanupError } = await supabase.functions.invoke('cleanup-gcp-resources', {
+                        body: { audioId }
+                    });
+                    
+                    if (gcpCleanupError) {
+                        console.error('Error cleaning up GCP resources:', gcpCleanupError);
+                    }
+                } else {
+                    console.log('GCP cleanup function not found, skipping');
+                }
+            } catch (gcpError) {
+                console.error('Failed to clean up GCP resources:', gcpError);
+                // Continue with deletion even if GCP cleanup fails
+            }
+        }
+        
+        // 6. Finally, delete the audio_files entry
+        console.log('Removing audio_files entry:', audioId);
+        const { error: audioFilesError } = await supabase
+            .from('audio_files')
+            .delete()
+            .eq('id', audioId);
+            
+        if (audioFilesError) {
+            console.error('Error removing audio_files entry:', audioFilesError);
+            throw new Error(`Failed to remove audio_files entry: ${audioFilesError.message}`);
+        }
+        
+        console.log('Podcast deletion completed successfully for audioId:', audioId);
+        return true;
+    } catch (error) {
+        console.error('Error in deletePodcast function:', error);
+        throw error;
+    }
+}
+
+// Add delete button to podcasts table
+function addDeleteButtonToPodcastRow(row, podcast) {
+    const deleteCell = document.createElement('td');
+    const deleteBtn = document.createElement('button');
+    deleteBtn.textContent = 'Delete';
+    deleteBtn.className = 'delete-podcast-btn';
+    
+    // Create a status indicator element
+    const statusIndicator = document.createElement('div');
+    statusIndicator.className = 'delete-status';
+    statusIndicator.style.display = 'none';
+    statusIndicator.style.fontSize = '12px';
+    statusIndicator.style.marginTop = '5px';
+    
+    deleteBtn.addEventListener('click', async (event) => {
+        event.preventDefault();
+        if (confirm('Are you sure you want to delete this podcast? This cannot be undone.')) {
+            try {
+                // Show deletion in progress
+                row.classList.add('deleting');
+                deleteBtn.disabled = true;
+                deleteBtn.textContent = 'Deleting...';
+                statusIndicator.style.display = 'block';
+                statusIndicator.textContent = 'Deletion in progress...';
+                statusIndicator.style.color = '#666';
+                
+                // Run the deletion process
+                await deletePodcast(podcast.id);
+                
+                // Success handling
+                statusIndicator.textContent = 'Successfully deleted!';
+                statusIndicator.style.color = 'green';
+                
+                // Wait a moment to show success message before removing row
+                setTimeout(() => {
+                    row.remove(); // Remove row from table after successful deletion
+                    
+                    // Refresh the podcasts list
+                    loadPodcasts(document.getElementById('podcast-list'));
+                }, 1000);
+                
+                // Clear browser cache for this audio URL if possible
+                if (podcast.file_url) {
+                    try {
+                        await clearAudioCaches(podcast.file_url);
+                        console.log('Cleared cache for URL:', podcast.file_url);
+                    } catch (cacheError) {
+                        console.warn('Could not clear audio cache:', cacheError);
+                    }
+                }
+            } catch (error) {
+                console.error('Error during podcast deletion:', error);
+                
+                // Error handling with more details
+                statusIndicator.textContent = `Error: ${error.message}`;
+                statusIndicator.style.color = 'red';
+                
+                // Re-enable the button for retry
+                deleteBtn.disabled = false;
+                deleteBtn.textContent = 'Retry Delete';
+                row.classList.remove('deleting');
+                
+                // Show error in console with full details
+                console.error('Full error details:', error);
+            }
+        }
+    });
+    
+    // Add elements to the cell
+    deleteCell.appendChild(deleteBtn);
+    deleteCell.appendChild(statusIndicator);
+    row.appendChild(deleteCell);
+}
+
+// Utility function to clear browser caches for specific URL patterns
+async function clearAudioCaches(urlPattern = null) {
+    try {
+        // Try to access the Cache API
+        if ('caches' in window) {
+            // Get all cache names
+            const cacheNames = await caches.keys();
+            
+            for (const cacheName of cacheNames) {
+                // Open each cache
+                const cache = await caches.open(cacheName);
+                const requests = await cache.keys();
+                
+                // Filter requests matching our pattern if one is provided
+                const requestsToDelete = urlPattern 
+                    ? requests.filter(req => req.url.includes(urlPattern))
+                    : requests.filter(req => 
+                        req.url.includes('audio-files') || 
+                        req.url.includes('.mp3') || 
+                        req.url.includes('.wav') ||
+                        req.url.includes('/storage/v1/')
+                    );
+                
+                // Delete matching requests
+                for (const request of requestsToDelete) {
+                    console.log('Clearing cached URL:', request.url);
+                    await cache.delete(request);
+                }
+            }
+            console.log('Audio caches cleared successfully');
+            return true;
+        } else {
+            console.warn('Cache API not available in this browser');
+            return false;
+        }
+    } catch (error) {
+        console.error('Error clearing caches:', error);
+        return false;
+    }
+}
+
+// Add a clear cache button to the podcasts page
+function addClearCacheButton() {
+    const container = document.querySelector('.podcasts-container');
+    if (!container) return;
+    
+    const clearCacheBtn = document.createElement('button');
+    clearCacheBtn.textContent = 'Clear Audio Cache';
+    clearCacheBtn.className = 'clear-cache-btn';
+    clearCacheBtn.style.cssText = 'background-color: #4285f4; color: white; border: none; padding: 8px 16px; margin: 10px 0; border-radius: 4px; cursor: pointer;';
+    
+    clearCacheBtn.addEventListener('click', async () => {
+        clearCacheBtn.disabled = true;
+        clearCacheBtn.textContent = 'Clearing...';
+        
+        const cleared = await clearAudioCaches();
+        
+        if (cleared) {
+            alert('Audio cache cleared successfully. Please reload the page to see changes.');
+            window.location.reload();
+        } else {
+            alert('Failed to clear cache. Try manually clearing browser cache.');
+            clearCacheBtn.disabled = false;
+            clearCacheBtn.textContent = 'Clear Audio Cache';
+        }
+    });
+    
+    container.insertBefore(clearCacheBtn, container.firstChild);
+}
+
+// Call this function when loading the podcasts page
+document.addEventListener('DOMContentLoaded', () => {
+    const podcastsContainer = document.querySelector('.podcasts-container');
+    if (podcastsContainer) {
+        addClearCacheButton();
     }
 });
