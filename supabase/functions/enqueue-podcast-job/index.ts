@@ -116,7 +116,9 @@ serve(async (req) => {
 
     console.log(`Sending job to GCP Cloud Function: ${GCP_FUNCTION_URL}`);
 
-    const gcpResponse = await fetch(GCP_FUNCTION_URL, {
+    // Send the job to GCP Cloud Function asynchronously without waiting for response
+    // This prevents the Supabase Edge Function from timing out
+    fetch(GCP_FUNCTION_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -127,65 +129,28 @@ serve(async (req) => {
         userId,
         authToken: jwt
       })
+    }).catch(error => {
+      // Log error but don't wait for the result
+      console.error(`Async GCP request error (will continue): ${error.message}`);
     });
 
-    if (!gcpResponse.ok) {
-      const errorText = await gcpResponse.text();
-      console.error(`Error from GCP Cloud Function: ${gcpResponse.status} ${errorText}`);
-      
-      // Update job status to failed
-      await supabaseAdmin
-        .from('podcast_jobs')
-        .update({
-          status: 'failed',
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', jobData.id);
-        
-      // Log the error
-      await supabaseAdmin
-        .from('processing_logs')
-        .insert({
-          job_id: jobData.id,
-          event_type: 'enqueue_failed',
-          message: `Failed to enqueue job to GCP: ${gcpResponse.status}`,
-          details: { error: errorText },
-          timestamp: new Date().toISOString()
-        });
-        
-      throw new Error(`Failed to enqueue job to GCP: ${gcpResponse.status} ${errorText}`);
-    }
-
-    const gcpData = await gcpResponse.json();
-    console.log("GCP Cloud Function response:", gcpData);
-
-    // Update job with GCP job ID if provided
-    if (gcpData.gcp_job_id) {
-      await supabaseAdmin
-        .from('podcast_jobs')
-        .update({
-          gcp_job_id: gcpData.gcp_job_id,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', jobData.id);
-    }
-
-    // Log successful enqueue
+    // Log enqueue event
     await supabaseAdmin
       .from('processing_logs')
       .insert({
         job_id: jobData.id,
         event_type: 'enqueued',
-        message: 'Successfully enqueued job to GCP',
-        details: { gcp_response: gcpData },
+        message: 'Job sent to GCP for processing',
+        details: { status: 'sent' },
         timestamp: new Date().toISOString()
       });
 
-    // Return success response with job ID
+    // Return success response with job ID immediately without waiting for GCP response
     return new Response(
       JSON.stringify({ 
         job_id: jobData.id,
-        success: true 
+        success: true,
+        message: 'Job sent for processing. Check status for updates.'
       }),
       { 
         headers: { 
