@@ -1007,7 +1007,7 @@ async function loadPodcasts(podcastList) {
 
     } catch (error) {
         console.error('Error loading podcasts:', error);
-        alert('Failed to load podcasts. Please try again.');
+        podcastList.innerHTML = `<tr><td colspan="3" style="text-align: center; color: red;">Failed to load podcasts. Error: ${error.message}</td></tr>`;
     }
 }
 
@@ -1278,28 +1278,21 @@ async function isGcpMigrationEnabled() {
 }
 
 // New approach - Enqueue podcast job and poll for status
-async function startPodcastGeneration(articles, maxRetries = 3) {
-    let retries = 0;
-    
-    while (retries < maxRetries) {
-        try {
-            const { data, error } = await supabase.functions.invoke('enqueue-podcast-job', {
-                body: { articles }
-            });
-            
-            if (error) throw error;
-            return data.job_id;
-        } catch (error) {
-            retries++;
-            console.error(`Error starting podcast generation (attempt ${retries}/${maxRetries}):`, error);
-            
-            if (retries >= maxRetries) {
-                throw new Error(`Failed to start podcast generation after ${maxRetries} attempts: ${error.message}`);
-            }
-            
-            // Wait before retrying (exponential backoff)
-            await new Promise(resolve => setTimeout(resolve, 1000 * Math.pow(2, retries - 1)));
-        }
+async function startPodcastGeneration(articles) {
+    try {
+        // Only make a single request - no retry needed since the edge function
+        // now responds immediately and doesn't wait for GCP processing
+        const { data, error } = await supabase.functions.invoke('enqueue-podcast-job', {
+            body: { articles }
+        });
+        
+        if (error) throw error;
+        
+        console.log('Podcast generation job initiated:', data);
+        return data.job_id;
+    } catch (error) {
+        console.error('Error starting podcast generation:', error);
+        throw new Error(`Failed to start podcast generation: ${error.message}`);
     }
 }
 

@@ -16,12 +16,17 @@ async function accessSecret(secretName) {
 
 // Main function handler for GCP Cloud Functions
 functions.http('processPodcastAudio', async (req, res) => {
+  let supabaseAdmin = null;
+  let jobId = null;
+  
   try {
     // Log request received
     console.log("Podcast audio processor function called");
     
     // Get the request data
-    const { articles, jobId, userId, authToken } = req.body;
+    const { articles, jobId: requestJobId, userId, authToken } = req.body;
+    jobId = requestJobId; // Store jobId in the outer scope for error handling
+    
     console.log("Received articles:", JSON.stringify(articles, null, 2));
     console.log("Job ID:", jobId);
     console.log("User ID:", userId);
@@ -76,7 +81,7 @@ functions.http('processPodcastAudio', async (req, res) => {
     const openai = new OpenAI({ apiKey: openaiApiKey });
 
     // Initialize Supabase client with service key for admin operations
-    const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey);
+    supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey);
     
     // Initialize Supabase client with user's auth token for user-specific operations
     const supabaseClient = createClient(supabaseUrl, supabaseServiceKey, {
@@ -87,6 +92,13 @@ functions.http('processPodcastAudio', async (req, res) => {
       },
     });
 
+    // Send immediate response to prevent Supabase Edge Function timeout
+    res.status(200).json({ 
+      success: true, 
+      message: 'Podcast processing started',
+      job_id: jobId
+    });
+
     // Update job status to processing
     await updateJobStatus(supabaseAdmin, jobId, 'processing', {
       processing_started_at: new Date().toISOString()
@@ -95,27 +107,36 @@ functions.http('processPodcastAudio', async (req, res) => {
     // Log processing start
     await logProcessingEvent(supabaseAdmin, jobId, 'processing_started', 'Started processing podcast audio');
 
-    // Generate conversation script
-    console.log("Generating conversation script...");
-
     // Process all articles in one go without chunking
     console.log(`Processing ${articles.length} articles in one go`);
 
     // Create reusable template sections to reduce repetition
-    const mainDiscussionTemplate = `2. Main Discussion:
-  For each article, cover these aspects in a natural conversation:
-  - Definition and Background:
+    const mainDiscussionTemplate = `Create a focused discussion about this specific article that will last for at least 3.5 minutes:
+  - Definition and Background (45-60 seconds):
     - Alice defines the topic and provides historical context.
     - Bob adds interesting facts or anecdotes related to the topic.
-  - Current Relevance and Applications:
+    - Include sufficient detail to properly introduce the topic to listeners.
+    - Provide at least 3-4 exchanges between hosts in this section.
+  
+  - Current Relevance and Applications (60-75 seconds):
     - Both hosts discuss how the topic applies in today's world.
     - Include real-world examples, case studies, or recent news.
-  - Challenges and Controversies:
+    - Explore multiple areas where this topic has current relevance and impact.
+    - This should be your most detailed section with at least 4-5 exchanges between hosts.
+  
+  - Challenges and Controversies (45-60 seconds):
     - Hosts explore any debates or challenges associated with the topic.
     - Present multiple viewpoints to provide a balanced perspective.
-  - Future Outlook:
+    - Discuss potential solutions or approaches to these challenges.
+    - Include at least 3-4 exchanges between hosts in this section.
+  
+  - Future Outlook (30-45 seconds):
     - Hosts speculate on the future developments related to the topic.
-    - Discuss potential innovations or changes on the horizon.`;
+    - Discuss potential innovations or changes on the horizon.
+    - Consider how this might affect listeners or society as a whole.
+    - Include at least 2-3 exchanges between hosts to wrap up the discussion.
+  
+  IMPORTANT: The discussion for this article should try to be 3.5 minutes in total. Ensure sufficient depth and detail in each section to meet this time requirement.`;
 
     const toneStyleTemplate = `Tone and Style:
   - Conversational and engaging, as if speaking directly to the listener.
@@ -140,31 +161,25 @@ Continue this structure with natural conversation flow.`;
     // Get all article titles for the introduction
     const allArticleTitles = articles.map(article => article.title);
     
-    // Create a single prompt for all articles
-    const scriptPrompt = `You are two podcast hosts, Alice and Bob.
+    console.log("Generating introduction...");
+    
+    // Create introduction prompt
+    const introPrompt = `You are two podcast hosts, Alice and Bob.
 
-Create a podcast script where two hosts engage in a dynamic 
-and informative conversation about the articles given below. The discussion should be accessible 
-to a general audience, providing clear explanations, real-world examples, 
-and diverse perspectives. Some articles have summaries as well attached.
+Create ONLY the introduction section for a podcast where two hosts engage in a dynamic 
+and informative conversation about multiple articles. The introduction should be approximately 1 minute long.
 
-${articles.map((article, i) => `Article ${i + 1}: ${article.title}
-${article.summary || article.content}`).join('\n\n')}
+Here are the titles of all articles that will be discussed:
+${allArticleTitles.join('\n')}
 
-Structure:
+The introduction should include:
+- Alice greeting listeners and introducing Bob.
+- Brief overview of the episode's topic and its relevance.
+- Mention that today you'll be discussing ALL of these topics: ${allArticleTitles.join(', ')}
+- Create excitement about the full range of articles being covered in this episode.
+- Indicate that this will be a longer, in-depth episode with substantial time devoted to each topic.
 
-1. Introduction (1 minute):
-  - Alice greets listeners and introduces Bob.
-  - Brief overview of the episode's topic and its relevance.
-  - Mention that today you'll be discussing ALL of these topics: ${allArticleTitles.join(', ')}
-  - Create excitement about the full range of articles being covered in this episode.
-
-${mainDiscussionTemplate}
-
-3. Conclusion (1 minute):
-  - Hosts summarize key takeaways from the discussion.
-  - Encourage listeners to reflect on the topic or engage further.
-  - Thank the audience for listening and mention any future episodes.
+DO NOT start discussing any specific article yet - this is ONLY the introduction.
 
 ${toneStyleTemplate}
 
@@ -172,21 +187,132 @@ ${guidelinesTemplate}
 
 ${formatTemplate}`;
 
-    // Generate script for all articles at once
-    const scriptResponse = await openai.chat.completions.create({
+    // Generate introduction
+    const introResponse = await openai.chat.completions.create({
       model: 'gpt-3.5-turbo',
       messages: [
         {
           role: 'system',
-          content: scriptPrompt
+          content: introPrompt
         }
       ],
       max_tokens: 4096,
       temperature: 0.7
     });
     
-    const script = scriptResponse.choices[0].message.content.trim();
-    console.log("Script generated for all articles in one go");
+    const introScript = introResponse.choices[0].message.content.trim();
+    console.log("Introduction generated");
+    
+    // Generate discussion for each article
+    console.log("Generating discussions for each article...");
+    
+    const articleScripts = [];
+    
+    for (let i = 0; i < articles.length; i++) {
+      const article = articles[i];
+      console.log(`Generating discussion for article ${i + 1}: ${article.title}`);
+      
+      // Create prompt for this specific article
+      const articlePrompt = `You are two podcast hosts, Alice and Bob.
+
+You are in the middle of a podcast episode where you're discussing multiple articles.
+You've already introduced the podcast and now need to create a focused discussion about this specific article:
+
+Title: ${article.title}
+${article.summary || article.content}
+
+${mainDiscussionTemplate}
+
+IMPORTANT:
+- DO NOT create an introduction for the podcast - you're already in the middle of the episode.
+- DO NOT include any conclusion for the overall podcast.
+- DO NOT reference that this is "the first article" or "the next article" or use any numbering.
+- If this isn't the first article, start with a natural transition from a previous topic.
+- CRITICAL: Your response MUST contain enough detailed content to fill AT LEAST 3.5 minutes of speaking time.
+- Each section should be comprehensive and in-depth - be thorough in your analysis and discussion.
+- Include substantial dialogue for each point - aim for 2-3 exchanges between hosts per subtopic.
+- Remember that spoken content takes longer than reading - aim for approximately 525-550 words minimum.
+- The final output should feel like a complete, substantive segment that could stand on its own.
+
+${toneStyleTemplate}
+
+${guidelinesTemplate}
+
+${formatTemplate}`;
+
+      // Generate script for this article
+      const articleResponse = await openai.chat.completions.create({
+        model: 'gpt-3.5-turbo',
+        messages: [
+          {
+            role: 'system',
+            content: articlePrompt
+          }
+        ],
+        max_tokens: 4096,  // Keep maximum token limit
+        temperature: 0.7
+      });
+      
+      const articleScript = articleResponse.choices[0].message.content.trim();
+      articleScripts.push(articleScript);
+      
+      // Calculate and log the word count and estimated time
+      const wordCount = articleScript.split(/\s+/).length;
+      const estimatedMinutes = (wordCount / 150).toFixed(2); // Assuming ~150 words per minute for podcasts
+      console.log(`Discussion generated for article ${i + 1}: ${wordCount} words, ~${estimatedMinutes} minutes`);
+      
+      // If the content seems too short, log a warning
+      if (wordCount < 500) {
+        console.warn(`WARNING: Article ${i + 1} discussion may be too short at ${wordCount} words (target: 525-550+ words)`);
+      }
+    }
+    
+    console.log("Generating conclusion...");
+    
+    // Create conclusion prompt
+    const conclusionPrompt = `You are two podcast hosts, Alice and Bob.
+
+Create ONLY the conclusion section for a podcast where you've just finished discussing these articles:
+${allArticleTitles.join('\n')}
+
+The conclusion should be approximately 1 minute long and include:
+- Hosts summarizing key takeaways from the discussions.
+- Encouragement for listeners to reflect on the topics or engage further.
+- Thanking the audience for listening and mentioning any future episodes.
+
+This is ONLY the conclusion - assume all articles have already been thoroughly discussed.
+
+${toneStyleTemplate}
+
+${guidelinesTemplate}
+
+${formatTemplate}`;
+
+    // Generate conclusion
+    const conclusionResponse = await openai.chat.completions.create({
+      model: 'gpt-3.5-turbo',
+      messages: [
+        {
+          role: 'system',
+          content: conclusionPrompt
+        }
+      ],
+      max_tokens: 4096,
+      temperature: 0.7
+    });
+    
+    const conclusionScript = conclusionResponse.choices[0].message.content.trim();
+    console.log("Conclusion generated");
+    
+    // Combine all parts into a single script
+    const fullScript = [
+      introScript,
+      ...articleScripts,
+      conclusionScript
+    ].join('\n\n');
+    
+    const script = fullScript.trim();
+    console.log("Full podcast script assembled");
 
     // Save the generated script to the database
     await updateJobStatus(supabaseAdmin, jobId, 'script_generated', {
@@ -448,25 +574,28 @@ ${formatTemplate}`;
     console.error('Error in generate-podcast function:', {
       error: error.message,
       stack: error.stack,
-      jobId: req.body?.jobId || 'unknown',
+      jobId: jobId || req.body?.jobId || 'unknown',
       userId: req.body?.userId || 'unknown'
     });
 
     // Try to update job status to failed if possible
     try {
-      if (req.body && req.body.jobId) {
-        const [supabaseUrl, supabaseServiceKey] = await Promise.all([
-          accessSecret('supabase-url'),
-          accessSecret('supabase-service-key')
-        ]);
+      if (jobId) {
+        if (!supabaseAdmin) {
+          // If supabaseAdmin is not initialized yet, initialize it now
+          const [supabaseUrl, supabaseServiceKey] = await Promise.all([
+            accessSecret('supabase-url'),
+            accessSecret('supabase-service-key')
+          ]);
+          
+          supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey);
+        }
         
-        const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey);
-        
-        await updateJobStatus(supabaseAdmin, req.body.jobId, 'failed', {
+        await updateJobStatus(supabaseAdmin, jobId, 'failed', {
           processing_completed_at: new Date().toISOString()
         });
         
-        await logProcessingEvent(supabaseAdmin, req.body.jobId, 'processing_failed', 
+        await logProcessingEvent(supabaseAdmin, jobId, 'processing_failed', 
           'Error in podcast audio processor', 
           { error: error.message, stack: error.stack });
       }
@@ -474,15 +603,17 @@ ${formatTemplate}`;
       console.error('Failed to log error to database:', logError);
     }
 
-    // Return detailed error response
-    return res.status(500).json({ 
-      error: error.message,
-      success: false,
-      details: {
-        type: error.name,
-        cause: error.cause
-      }
-    });
+    // If response hasn't been sent yet, send an error response
+    if (!res.headersSent) {
+      return res.status(500).json({ 
+        error: error.message,
+        success: false,
+        details: {
+          type: error.name,
+          cause: error.cause
+        }
+      });
+    }
   }
 });
 
