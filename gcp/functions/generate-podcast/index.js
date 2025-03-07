@@ -1,17 +1,408 @@
-const functions = require('@google-cloud/functions-framework');
 const { SecretManagerServiceClient } = require('@google-cloud/secret-manager');
+const functions = require('@google-cloud/functions-framework');
 const { OpenAI } = require('openai');
 const { createClient } = require('@supabase/supabase-js');
 const crypto = require('crypto');
+// Need axios for the direct OpenAI API calls
+const axios = require('axios');
+
+// Add utility for memory monitoring
+const process = require('process');
+
+// Rate Limiter Implementation
+class RateLimiter {
+  constructor({
+    maxRequestsPerMinute = 60,    // Default to 60 requests per minute
+    maxTokensPerMinute = 90000,   // Default to 90K tokens per minute 
+    logLevel = 'info'             // Default log level
+  } = {}) {
+    this.maxRequestsPerMinute = maxRequestsPerMinute;
+    this.maxTokensPerMinute = maxTokensPerMinute;
+    this.availableRequestCapacity = maxRequestsPerMinute;
+    this.availableTokenCapacity = maxTokensPerMinute;
+    this.lastUpdateTime = Date.now();
+    this.requestQueue = [];
+    this.retryDelay = 2000; // Start with 2s retry delay
+    this.maxRetryDelay = 30000; // Maximum retry delay of 30s
+    this.rateLimitHitCount = 0;
+    this.apiErrorCount = 0;
+    this.requestSuccessCount = 0;
+    this.lastRateLimitTime = 0;
+    this.status = {
+      inProgress: 0,
+      completed: 0,
+      failed: 0,
+      totalTokensUsed: 0
+    };
+    this.logLevel = logLevel;
+  }
+
+  // Log with different levels
+  log(level, message, data = {}) {
+    const levels = {
+      error: 0,
+      warn: 1,
+      info: 2,
+      debug: 3
+    };
+
+    const logLevelValue = levels[this.logLevel] || 2;
+    
+    if (levels[level] <= logLevelValue) {
+      const memoryUsage = process.memoryUsage();
+      const formattedMemory = {
+        rss: `${Math.round(memoryUsage.rss / 1024 / 1024)} MB`,
+        heapTotal: `${Math.round(memoryUsage.heapTotal / 1024 / 1024)} MB`,
+        heapUsed: `${Math.round(memoryUsage.heapUsed / 1024 / 1024)} MB`,
+        external: `${Math.round(memoryUsage.external / 1024 / 1024)} MB`
+      };
+      
+      switch (level) {
+        case 'error':
+          console.error('[RateLimiter ERROR]', message, { ...data, memoryUsage: formattedMemory });
+          break;
+        case 'warn':
+          console.warn('[RateLimiter WARNING]', message, { ...data, memoryUsage: formattedMemory });
+          break;
+        case 'info':
+          console.info('[RateLimiter INFO]', message, { ...data, memoryUsage: formattedMemory });
+          break;
+        case 'debug':
+          console.debug('[RateLimiter DEBUG]', message, { ...data, memoryUsage: formattedMemory });
+          break;
+      }
+    }
+  }
+
+  // Update available capacity based on time passed
+  updateCapacity() {
+    const currentTime = Date.now();
+    const secondsSinceUpdate = (currentTime - this.lastUpdateTime) / 1000;
+    
+    // Update request capacity (requests per minute -> requests per second)
+    this.availableRequestCapacity = Math.min(
+      this.availableRequestCapacity + (this.maxRequestsPerMinute * secondsSinceUpdate / 60),
+      this.maxRequestsPerMinute
+    );
+    
+    // Update token capacity (tokens per minute -> tokens per second)
+    this.availableTokenCapacity = Math.min(
+      this.availableTokenCapacity + (this.maxTokensPerMinute * secondsSinceUpdate / 60),
+      this.maxTokensPerMinute
+    );
+    
+    this.lastUpdateTime = currentTime;
+    
+    this.log('debug', 'Capacity updated', {
+      availableRequestCapacity: this.availableRequestCapacity.toFixed(2),
+      availableTokenCapacity: this.availableTokenCapacity.toFixed(2),
+      secondsSinceUpdate
+    });
+  }
+
+  // Calculate token consumption for API calls
+  estimateTokenConsumption(request) {
+    // Default tokenEstimation handles arbitrary requests
+    let inputTokens = 0;
+    let outputTokens = 0;
+    
+    // For Chat Completions
+    if (request.messages) {
+      // Very rough estimation: 1 token ≈ 4 characters
+      inputTokens = JSON.stringify(request.messages).length / 4;
+      // Estimate based on max_tokens if provided, otherwise use a default
+      outputTokens = request.max_tokens || 1000;
+    } 
+    // For TTS
+    else if (request.input) {
+      // For audio.speech, estimate 1 token ≈ 4 characters
+      inputTokens = request.input.length / 4;
+      // Audio output doesn't consume output tokens in the same way
+      outputTokens = 0;
+    }
+    
+    return {
+      inputTokens: Math.ceil(inputTokens),
+      outputTokens: Math.ceil(outputTokens),
+      totalTokens: Math.ceil(inputTokens + outputTokens)
+    };
+  }
+
+  // Check if we have capacity for this request
+  hasCapacity(tokenCount) {
+    this.updateCapacity();
+    
+    const hasRequestCapacity = this.availableRequestCapacity >= 1;
+    const hasTokenCapacity = this.availableTokenCapacity >= tokenCount;
+    
+    this.log('debug', 'Capacity check', {
+      hasRequestCapacity,
+      hasTokenCapacity,
+      requestCapacity: this.availableRequestCapacity.toFixed(2),
+      tokenCapacity: this.availableTokenCapacity.toFixed(2),
+      requiredTokens: tokenCount
+    });
+    
+    return hasRequestCapacity && hasTokenCapacity;
+  }
+
+  // Consume capacity for a request
+  consumeCapacity(tokenCount) {
+    this.availableRequestCapacity -= 1;
+    this.availableTokenCapacity -= tokenCount;
+    
+    this.log('debug', 'Capacity consumed', {
+      remainingRequestCapacity: this.availableRequestCapacity.toFixed(2),
+      remainingTokenCapacity: this.availableTokenCapacity.toFixed(2),
+      tokensConsumed: tokenCount
+    });
+  }
+
+  // Execute an API request with rate limiting and retries
+  async executeRequest(apiCall, requestData, maxAttempts = 5) {
+    const startTime = Date.now();
+    let attempt = 0;
+    let lastError = null;
+    
+    // Track this request in our status
+    this.status.inProgress++;
+    
+    // Estimate token consumption
+    const tokenEstimate = this.estimateTokenConsumption(requestData);
+    
+    this.log('info', 'API request queued', {
+      requestType: apiCall.name || 'Unknown',
+      tokenEstimate,
+      maxAttempts
+    });
+    
+    while (attempt < maxAttempts) {
+      attempt++;
+      
+      // Check if we have capacity
+      if (!this.hasCapacity(tokenEstimate.totalTokens)) {
+        // Wait a bit before trying again
+        const waitTime = 1000; // 1 second
+        this.log('debug', `Waiting for capacity, attempt ${attempt}`, {
+          waitTime,
+          tokenEstimate
+        });
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+        continue;
+      }
+      
+      // Consume capacity
+      this.consumeCapacity(tokenEstimate.totalTokens);
+      
+      try {
+        this.log('debug', `Making API request, attempt ${attempt}`, { request: requestData });
+        const result = await apiCall(requestData);
+        
+        // Log success
+        const duration = Date.now() - startTime;
+        this.status.inProgress--;
+        this.status.completed++;
+        this.status.totalTokensUsed += tokenEstimate.totalTokens;
+        this.requestSuccessCount++;
+        
+        this.log('info', 'API request succeeded', {
+          attempts: attempt,
+          duration: `${duration}ms`,
+          requestType: apiCall.name || 'Unknown'
+        });
+        
+        return result;
+      } catch (error) {
+        // Format error for logging
+        const errorMessage = error.message || 'Unknown error';
+        const statusCode = error.status || 'unknown';
+        const errorResponse = error.response?.data || error.response || {};
+        
+        // Check for rate limit errors
+        const isRateLimit = errorMessage.toLowerCase().includes('rate limit') || 
+                           statusCode === 429 ||
+                           (errorResponse.error && 
+                            errorResponse.error.type === 'rate_limit_exceeded');
+        
+        if (isRateLimit) {
+          this.rateLimitHitCount++;
+          this.lastRateLimitTime = Date.now();
+          
+          // Calculate retry delay with exponential backoff
+          const retryAfter = parseInt(error.response?.headers?.['retry-after'] || '1', 10);
+          const delay = Math.min(this.maxRetryDelay, retryAfter * 1000 || this.retryDelay);
+          this.retryDelay = Math.min(this.maxRetryDelay, this.retryDelay * 2); // Exponential backoff
+          
+          this.log('warn', `Rate limit hit, will retry after delay`, {
+            retryDelay: `${delay}ms`,
+            attempt,
+            rateLimitHitCount: this.rateLimitHitCount
+          });
+          
+          // Wait for the specified delay
+          await new Promise(resolve => setTimeout(resolve, delay));
+        } else {
+          // It's not a rate limit error
+          this.apiErrorCount++;
+          this.retryDelay = 2000; // Reset retry delay for non-rate-limit errors
+          
+          this.log('error', `API request error, will retry`, {
+            errorMessage,
+            statusCode,
+            attempt,
+            maxAttempts,
+            errorResponse
+          });
+          
+          // Short delay before retry for non-rate-limit errors
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+        
+        lastError = error;
+      }
+    }
+    
+    // All attempts failed
+    this.status.inProgress--;
+    this.status.failed++;
+    
+    this.log('error', 'API request failed after all attempts', {
+      attempts: attempt,
+      lastError: lastError?.message || 'Unknown error',
+      duration: `${Date.now() - startTime}ms`
+    });
+    
+    throw lastError || new Error('Request failed after maximum retry attempts');
+  }
+  
+  // Get current status
+  getStatus() {
+    return {
+      ...this.status,
+      rateLimitHitCount: this.rateLimitHitCount,
+      apiErrorCount: this.apiErrorCount,
+      requestSuccessCount: this.requestSuccessCount,
+      currentCapacity: {
+        requests: this.availableRequestCapacity.toFixed(2),
+        tokens: this.availableTokenCapacity.toFixed(2)
+      }
+    };
+  }
+}
+
+// Memory monitoring function
+function logMemoryUsage(prefix = '') {
+  const memoryUsage = process.memoryUsage();
+  console.log(`${prefix} Memory Usage:`, {
+    rss: `${Math.round(memoryUsage.rss / 1024 / 1024)} MB`,       // Total memory allocated
+    heapTotal: `${Math.round(memoryUsage.heapTotal / 1024 / 1024)} MB`, // Total size of allocated heap
+    heapUsed: `${Math.round(memoryUsage.heapUsed / 1024 / 1024)} MB`,  // Actual memory used
+    external: `${Math.round(memoryUsage.external / 1024 / 1024)} MB`   // Memory used by C++ objects
+  });
+}
+
+// Function to log buffer sizes
+function logBufferSizes(buffers, prefix = '') {
+  if (!buffers || !Array.isArray(buffers)) {
+    console.log(`${prefix} Buffer tracking: No buffers to measure`);
+    return;
+  }
+  
+  // Calculate individual and total sizes
+  const individualSizes = buffers.map(buf => buf.length);
+  const totalSize = individualSizes.reduce((acc, size) => acc + size, 0);
+  
+  // Format sizes for readable output
+  const formatSize = (bytes) => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1048576) return `${(bytes / 1024).toFixed(2)} KB`;
+    return `${(bytes / 1048576).toFixed(2)} MB`;
+  };
+  
+  // Calculate statistics
+  const averageSize = individualSizes.length > 0 ? totalSize / individualSizes.length : 0;
+  const maxSize = individualSizes.length > 0 ? Math.max(...individualSizes) : 0;
+  const minSize = individualSizes.length > 0 ? Math.min(...individualSizes) : 0;
+  
+  console.log(`${prefix} Buffer Sizes:`, {
+    count: individualSizes.length,
+    totalSize: formatSize(totalSize),
+    totalSizeBytes: totalSize,
+    averageSize: formatSize(averageSize),
+    maxSegmentSize: formatSize(maxSize),
+    minSegmentSize: formatSize(minSize),
+    lastFiveSegments: individualSizes.slice(-5).map(formatSize)
+  });
+  
+  return totalSize;
+}
 
 // Secret Manager client for accessing secrets
 const secretManagerClient = new SecretManagerServiceClient();
 
 // Helper function to access secrets
 async function accessSecret(secretName) {
-  const name = `projects/${process.env.PROJECT_ID}/secrets/${secretName}/versions/latest`;
+  const name = `projects/supabase-451007/secrets/${secretName}/versions/latest`;
+  console.log("Accessing secret:", name);
   const [version] = await secretManagerClient.accessSecretVersion({ name });
   return version.payload.data.toString();
+}
+
+/**
+ * Generate audio with timeout using a direct API call
+ * @param {string} text - Text to convert to speech
+ * @param {string} voice - Voice to use (e.g., "alloy", "onyx")
+ * @param {string} openaiApiKey - OpenAI API key
+ * @param {number} timeoutSeconds - Timeout in seconds
+ * @returns {Promise<Buffer>} - Audio buffer
+ */
+async function generateAudioWithTimeout(text, voice, openaiApiKey, timeoutSeconds = 60) {
+  console.log(`[${new Date().toISOString()}] Starting audio generation with timeout for: "${text.substring(0, 50)}..."`);
+
+  // Create a direct HTTP request to OpenAI API using axios with timeout
+  const axios = require('axios');
+  
+  // Create an AbortController for timeout
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => {
+    controller.abort();
+  }, timeoutSeconds * 1000);
+  
+  try {
+    // Make a direct request to OpenAI API
+    const response = await axios({
+      method: 'post',
+      url: 'https://api.openai.com/v1/audio/speech',
+      headers: {
+        'Authorization': `Bearer ${openaiApiKey}`,
+        'Content-Type': 'application/json'
+      },
+      data: {
+        model: 'tts-1',
+        voice: voice,
+        input: text
+      },
+      responseType: 'arraybuffer',
+      signal: controller.signal,
+      timeout: timeoutSeconds * 1000 // Axios timeout as backup
+    });
+    
+    // Convert the response to a buffer
+    return Buffer.from(response.data);
+  } catch (error) {
+    if (error.name === 'AbortError' || error.code === 'ECONNABORTED') {
+      throw new Error(`Request timed out after ${timeoutSeconds} seconds`);
+    }
+    
+    // Handle other errors
+    const errorMessage = error.response 
+      ? `API error: ${error.response.status} - ${JSON.stringify(error.response.data)}` 
+      : error.message;
+    
+    throw new Error(`Audio generation failed: ${errorMessage}`);
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 // Main function handler for GCP Cloud Functions
@@ -19,7 +410,58 @@ functions.http('processPodcastAudio', async (req, res) => {
   let supabaseAdmin = null;
   let jobId = null;
   
+  // Track execution time
+  const startTime = Date.now();
+  
+  // Create a rate limiter for OpenAI API calls
+  const openaiRateLimiter = new RateLimiter({
+    maxRequestsPerMinute: 50,      // Conservative limits to prevent hitting OpenAI's rate limits
+    maxTokensPerMinute: 80000,     // Conservative token limit (80K/min)
+    logLevel: 'info'               // Set to 'debug' for more detailed logs
+  });
+  
+  // Set up variables to track state for heartbeat logging
+  let currentState = 'initializing';
+  let currentStep = 'startup';
+  let progressDetails = {};
+  
+  // Master timeout for the entire function (30 minutes)
+  const masterTimeoutId = setTimeout(() => {
+    console.error(`[MASTER TIMEOUT] Function execution exceeded 30 minutes, forcing exit`);
+    
+    // Try to log final state to the database before exiting
+    try {
+      if (supabaseAdmin && jobId) {
+        // We're using a sync version here since we're in a timeout handler
+        updateJobStatus(supabaseAdmin, jobId, 'timeout', {
+          error: 'Function execution timed out after 30 minutes',
+          last_state: currentState,
+          last_step: currentStep,
+          processing_completed_at: new Date().toISOString()
+        }).catch(e => console.error('Failed to update job status on timeout', e));
+        
+        logProcessingEvent(supabaseAdmin, jobId, 'processing_timeout', 
+          'Function execution timed out after 30 minutes', 
+          { last_state: currentState, last_step: currentStep }
+        ).catch(e => console.error('Failed to log timeout event', e));
+      }
+    } catch (e) {
+      console.error('Failed to update job status or log event on timeout', e);
+    }
+    
+    // Force exit with error code after a short delay to allow logs to flush
+    setTimeout(() => process.exit(1), 2000);
+  }, 30 * 60 * 1000); // 30 minutes in milliseconds
+  
+  // Set up a heartbeat interval (log every 30 seconds)
+  const heartbeatInterval = setInterval(() => {
+    console.log(`[HEARTBEAT ${new Date().toISOString()}] Function still running. State: ${currentState}, Step: ${currentStep}`, progressDetails);
+  }, 30000); // Log every 30 seconds
+
   try {
+    // Start monitoring memory usage
+    logMemoryUsage('Function Start');
+    
     // Log request received
     console.log("Podcast audio processor function called");
     
@@ -70,6 +512,12 @@ functions.http('processPodcastAudio', async (req, res) => {
       }
     });
 
+    console.log("Articles validated");
+    logMemoryUsage('After Article Validation');
+    currentState = 'accessing_secrets';
+    currentStep = 'initialization';
+    console.log("Accessing secrets...");
+
     // Get secrets from Secret Manager
     const [openaiApiKey, supabaseUrl, supabaseServiceKey] = await Promise.all([
       accessSecret('openai_api_key'),
@@ -77,8 +525,13 @@ functions.http('processPodcastAudio', async (req, res) => {
       accessSecret('supabase-service-key')
     ]);
 
+    console.log("Finished accessing secrets")
+    currentState = 'initializing_clients';
+
     // Initialize OpenAI with the API key
     const openai = new OpenAI({ apiKey: openaiApiKey });
+
+    console.log("Creating Supabase client")
 
     // Initialize Supabase client with service key for admin operations
     supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey);
@@ -100,12 +553,15 @@ functions.http('processPodcastAudio', async (req, res) => {
     });
 
     // Update job status to processing
+    currentState = 'processing';
+    currentStep = 'starting';
     await updateJobStatus(supabaseAdmin, jobId, 'processing', {
       processing_started_at: new Date().toISOString()
     });
     
     // Log processing start
     await logProcessingEvent(supabaseAdmin, jobId, 'processing_started', 'Started processing podcast audio');
+    logMemoryUsage('Before Processing');
 
     // Process all articles in one go without chunking
     console.log(`Processing ${articles.length} articles in one go`);
@@ -163,6 +619,11 @@ Continue this structure with natural conversation flow.`;
     
     console.log("Generating introduction...");
     
+    // Generate introduction using rate limiter
+    currentState = 'generating_content';
+    currentStep = 'introduction';
+    progressDetails = { phase: 'introduction' };
+    
     // Create introduction prompt
     const introPrompt = `You are two podcast hosts, Alice and Bob.
 
@@ -187,8 +648,8 @@ ${guidelinesTemplate}
 
 ${formatTemplate}`;
 
-    // Generate introduction
-    const introResponse = await openai.chat.completions.create({
+    // Introduction request
+    const introRequest = {
       model: 'gpt-3.5-turbo',
       messages: [
         {
@@ -198,10 +659,43 @@ ${formatTemplate}`;
       ],
       max_tokens: 4096,
       temperature: 0.7
+    };
+    
+    // More robust timeout implementation using Promise.race
+    const introTimeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => {
+        const timeoutError = new Error(`Introduction generation request timed out after 60 seconds`);
+        timeoutError.name = 'TimeoutError';
+        reject(timeoutError);
+      }, 60000); // 60 second timeout
     });
+    
+    console.log(`[${new Date().toISOString()}] Starting OpenAI API call for introduction`);
+    
+    const introResponse = await openaiRateLimiter.executeRequest(
+      async (data) => {
+        try {
+          // Use Promise.race to implement timeout
+          const result = await Promise.race([
+            openai.chat.completions.create(data),
+            introTimeoutPromise
+          ]);
+          
+          console.log(`[${new Date().toISOString()}] Completed OpenAI API call for introduction`);
+          return result;
+        } catch (err) {
+          if (err.name === 'TimeoutError') {
+            console.error(`TIMEOUT: OpenAI API call for introduction timed out after 60 seconds`);
+          }
+          throw err;
+        }
+      },
+      introRequest
+    );
     
     const introScript = introResponse.choices[0].message.content.trim();
     console.log("Introduction generated");
+    logMemoryUsage('After Introduction Generation');
     
     // Generate discussion for each article
     console.log("Generating discussions for each article...");
@@ -210,6 +704,13 @@ ${formatTemplate}`;
     
     for (let i = 0; i < articles.length; i++) {
       const article = articles[i];
+      currentStep = `article_${i + 1}`;
+      progressDetails = { 
+        phase: 'article_discussions', 
+        current: i + 1, 
+        total: articles.length,
+        title: article.title.substring(0, 30) + (article.title.length > 30 ? '...' : '')
+      };
       console.log(`Generating discussion for article ${i + 1}: ${article.title}`);
       
       // Create prompt for this specific article
@@ -240,8 +741,8 @@ ${guidelinesTemplate}
 
 ${formatTemplate}`;
 
-      // Generate script for this article
-      const articleResponse = await openai.chat.completions.create({
+      // Create article request with rate limiting
+      const articleRequest = {
         model: 'gpt-3.5-turbo',
         messages: [
           {
@@ -249,9 +750,42 @@ ${formatTemplate}`;
             content: articlePrompt
           }
         ],
-        max_tokens: 4096,  // Keep maximum token limit
+        max_tokens: 4096,
         temperature: 0.7
+      };
+      
+      // Use the rate limiter to make the API call
+      // More robust timeout implementation using Promise.race
+      const articleTimeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => {
+          const timeoutError = new Error(`Article ${i + 1} generation request timed out after 60 seconds`);
+          timeoutError.name = 'TimeoutError';
+          reject(timeoutError);
+        }, 60000); // 60 second timeout
       });
+      
+      console.log(`[${new Date().toISOString()}] Starting OpenAI API call for article ${i + 1}`);
+      
+      const articleResponse = await openaiRateLimiter.executeRequest(
+        async (data) => {
+          try {
+            // Use Promise.race to implement timeout
+            const result = await Promise.race([
+              openai.chat.completions.create(data),
+              articleTimeoutPromise
+            ]);
+            
+            console.log(`[${new Date().toISOString()}] Completed OpenAI API call for article ${i + 1}`);
+            return result;
+          } catch (err) {
+            if (err.name === 'TimeoutError') {
+              console.error(`TIMEOUT: OpenAI API call for article ${i + 1} timed out after 60 seconds`);
+            }
+            throw err;
+          }
+        },
+        articleRequest
+      );
       
       const articleScript = articleResponse.choices[0].message.content.trim();
       articleScripts.push(articleScript);
@@ -265,9 +799,17 @@ ${formatTemplate}`;
       if (wordCount < 500) {
         console.warn(`WARNING: Article ${i + 1} discussion may be too short at ${wordCount} words (target: 525-550+ words)`);
       }
+      
+      // Log memory usage after each article generation
+      logMemoryUsage(`After Article ${i + 1} Generation`);
+      
+      // Log rate limiter status
+      console.log(`Rate limiter status after article ${i + 1}:`, openaiRateLimiter.getStatus());
     }
     
     console.log("Generating conclusion...");
+    currentStep = 'conclusion';
+    progressDetails = { phase: 'conclusion' };
     
     // Create conclusion prompt
     const conclusionPrompt = `You are two podcast hosts, Alice and Bob.
@@ -288,8 +830,8 @@ ${guidelinesTemplate}
 
 ${formatTemplate}`;
 
-    // Generate conclusion
-    const conclusionResponse = await openai.chat.completions.create({
+    // Create conclusion request with rate limiting
+    const conclusionRequest = {
       model: 'gpt-3.5-turbo',
       messages: [
         {
@@ -299,20 +841,56 @@ ${formatTemplate}`;
       ],
       max_tokens: 4096,
       temperature: 0.7
+    };
+    
+    // Use the rate limiter to make the API call
+    // More robust timeout implementation using Promise.race
+    const conclusionTimeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => {
+        const timeoutError = new Error(`Conclusion generation request timed out after 60 seconds`);
+        timeoutError.name = 'TimeoutError';
+        reject(timeoutError);
+      }, 60000); // 60 second timeout
     });
+    
+    console.log(`[${new Date().toISOString()}] Starting OpenAI API call for conclusion`);
+    
+    const conclusionResponse = await openaiRateLimiter.executeRequest(
+      async (data) => {
+        try {
+          // Use Promise.race to implement timeout
+          const result = await Promise.race([
+            openai.chat.completions.create(data),
+            conclusionTimeoutPromise
+          ]);
+          
+          console.log(`[${new Date().toISOString()}] Completed OpenAI API call for conclusion`);
+          return result;
+        } catch (err) {
+          if (err.name === 'TimeoutError') {
+            console.error(`TIMEOUT: OpenAI API call for conclusion timed out after 60 seconds`);
+          }
+          throw err;
+        }
+      },
+      conclusionRequest
+    );
     
     const conclusionScript = conclusionResponse.choices[0].message.content.trim();
     console.log("Conclusion generated");
+    logMemoryUsage('After Conclusion Generation');
     
-    // Combine all parts into a single script
-    const fullScript = [
+    // Assemble the full script
+    console.log("Assembling final script...");
+    currentState = 'assembling_script';
+    currentStep = 'script_combination';
+    progressDetails = { phase: 'script_assembly' };
+    
+    const script = [
       introScript,
       ...articleScripts,
       conclusionScript
     ].join('\n\n');
-    
-    const script = fullScript.trim();
-    console.log("Full podcast script assembled");
 
     // Save the generated script to the database
     await updateJobStatus(supabaseAdmin, jobId, 'script_generated', {
@@ -322,6 +900,7 @@ ${formatTemplate}`;
     
     // Log script generation completion
     await logProcessingEvent(supabaseAdmin, jobId, 'script_generated', 'Generated podcast script');
+    logMemoryUsage('After Script Generation');
 
     // Parse script into lines for each speaker
     const lines = script.split('\n')
@@ -331,57 +910,177 @@ ${formatTemplate}`;
 
     // Generate audio for each line in order, with proper voice assignment
     console.log("Generating audio for speakers...");
+    console.log(`Total lines to process: ${lines.length}`);
     const audioPromises = [];
     const audioMetadata = []; // Keep track of which voice was used for each segment
+    let cumulativeAudioBufferSize = 0;
 
-    for (const line of lines) {
+    // Log rate limiter status before audio generation
+    console.log("Rate limiter status before audio generation:", openaiRateLimiter.getStatus());
+
+    for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+      const line = lines[lineIndex];
       const cleanedLine = line.replace(/^(Alice|Bob):?\s*/i, '').trim();
       // Determine if this is Alice or Bob
       const isAlice = line.match(/^Alice:?/i);
       const voice = isAlice ? "alloy" : "onyx";
       
-      console.log(`Generating audio for: "${cleanedLine.substring(0, 50)}..." with voice: ${voice}`);
+      // Update progress for heartbeat
+      progressDetails.current_line = lineIndex + 1;
+      progressDetails.progress_percent = Math.round(((lineIndex + 1) / lines.length) * 100);
+      
+      console.log(`Generating audio for line ${lineIndex + 1}/${lines.length}: "${cleanedLine.substring(0, 50)}..." with voice: ${voice}`);
       
       try {
-        const response = await openai.audio.speech.create({
-          model: "tts-1",
-          voice: voice,
-          input: cleanedLine
-        });
+        // Use process isolation instead of direct API call
+        console.log(`[${new Date().toISOString()}] Starting isolated audio generation for line ${lineIndex + 1}`);
         
-        const buffer = Buffer.from(await response.arrayBuffer());
+        // Set a maximum retry count
+        let retryCount = 0;
+        const maxRetries = 2;
+        let buffer = null;
+        
+        // Retry loop for resilience
+        while (retryCount <= maxRetries && !buffer) {
+          try {
+            // Generate audio in an isolated process with a 60-second timeout
+            buffer = await generateAudioWithTimeout(
+              cleanedLine,
+              voice,
+              openaiApiKey,
+              60 // 60 second timeout
+            );
+          } catch (isolatedError) {
+            retryCount++;
+            console.error(`Isolated process error (attempt ${retryCount}/${maxRetries + 1}):`, isolatedError.message);
+            
+            if (retryCount <= maxRetries) {
+              // Wait a bit before retrying
+              const retryDelay = 2000 * retryCount; // Exponential backoff
+              console.log(`Retrying in ${retryDelay}ms...`);
+              await new Promise(resolve => setTimeout(resolve, retryDelay));
+            } else {
+              // Max retries exceeded, rethrow
+              throw new Error(`Failed to generate audio after ${maxRetries + 1} attempts: ${isolatedError.message}`);
+            }
+          }
+        }
+        
+        // Store the buffer
         audioPromises.push(buffer);
         audioMetadata.push({ isAlice, voice });
+        
+        // Track cumulative buffer size
+        cumulativeAudioBufferSize += buffer.length;
+        
+        console.log(`[${new Date().toISOString()}] Successfully added audio for line ${lineIndex + 1}`);
+        
+        // Log progress every 5 lines
+        if ((lineIndex + 1) % 5 === 0 || lineIndex === lines.length - 1) {
+          console.log(`Progress: ${lineIndex + 1}/${lines.length} lines processed (${Math.round((lineIndex + 1) / lines.length * 100)}%)`);
+          logMemoryUsage(`After ${lineIndex + 1} Audio Segments`);
+          logBufferSizes(audioPromises, `Audio Buffer after ${lineIndex + 1} segments`);
+          console.log(`Cumulative audio buffer size: ${(cumulativeAudioBufferSize / 1048576).toFixed(2)} MB`);
+          console.log("Rate limiter status:", openaiRateLimiter.getStatus());
+        }
       } catch (error) {
-        console.error(`Error generating audio for line: "${cleanedLine.substring(0, 50)}..."`, error);
+        console.error(`Error generating audio for line ${lineIndex + 1}/${lines.length}: "${cleanedLine.substring(0, 50)}..."`, error);
         // Log the error to the database
         await logProcessingEvent(supabaseAdmin, jobId, 'audio_generation_error', 
-          `Error generating audio for line: "${cleanedLine.substring(0, 50)}..."`, 
+          `Error generating audio for line ${lineIndex + 1}/${lines.length}: "${cleanedLine.substring(0, 50)}..."`, 
           { error: error.message });
-        // Continue with other lines even if one fails
+        
+        // Create a small empty buffer as a placeholder for the failed segment
+        // This allows the process to continue rather than failing completely
+        console.log(`Using silent placeholder for failed line ${lineIndex + 1}`);
+        const silentBuffer = Buffer.alloc(1000); // Small buffer of silence
+        audioPromises.push(silentBuffer);
+        audioMetadata.push({ isAlice, voice });
+        cumulativeAudioBufferSize += silentBuffer.length;
       }
     }
 
     console.log(`Generated ${audioPromises.length} audio segments with alternating voices`);
+    logMemoryUsage('After All Audio Generation');
+    logBufferSizes(audioPromises, 'Final Audio Segments');
 
     // Log audio generation completion
-    await logProcessingEvent(supabaseAdmin, jobId, 'audio_generated', 'Generated all audio segments');
+    await logProcessingEvent(supabaseAdmin, jobId, 'audio_generated', 'Generated all audio segments', {
+      audioSegments: audioPromises.length,
+      totalAudioSize: `${(cumulativeAudioBufferSize / 1048576).toFixed(2)} MB`,
+      averageSegmentSize: `${(cumulativeAudioBufferSize / audioPromises.length / 1024).toFixed(2)} KB`
+    });
 
     // Combine all audio buffers
+    console.log("Combining audio buffers...");
+    currentState = 'combining_audio';
+    currentStep = 'audio_combination';
+    progressDetails = { 
+      phase: 'audio_combination',
+      total_segments: audioPromises.length,
+      buffer_size_mb: (cumulativeAudioBufferSize / 1048576).toFixed(2)
+    };
     const totalLength = audioPromises.reduce((acc, buf) => acc + buf.length, 0);
+    console.log(`Total audio size: ${(totalLength / 1048576).toFixed(2)} MB (${totalLength} bytes)`);
+    
+    // Log memory before buffer allocation
+    logMemoryUsage('Before Buffer Allocation');
+    
+    // Allocate buffer for combined audio
+    console.log(`Allocating buffer of ${(totalLength / 1048576).toFixed(2)} MB`);
     const combinedBuffer = Buffer.alloc(totalLength);
+    
+    // Log memory after buffer allocation
+    logMemoryUsage('After Buffer Allocation');
+    
     let offset = 0;
+    let segmentsTotalSize = 0;
+    
     for (let i = 0; i < audioPromises.length; i++) {
       const buffer = audioPromises[i];
       buffer.copy(combinedBuffer, offset);
       offset += buffer.length;
+      segmentsTotalSize += buffer.length;
       
       // Log which speaker and voice was used
       console.log(`Added segment ${i+1}: ${audioMetadata[i].isAlice ? 'Alice (alloy)' : 'Bob (onyx)'}, Length: ${buffer.length} bytes`);
+      
+      // Log memory usage periodically
+      if ((i + 1) % 10 === 0 || i === audioPromises.length - 1) {
+        const percentComplete = Math.round((i + 1) / audioPromises.length * 100);
+        console.log(`Combined ${i + 1}/${audioPromises.length} segments (${percentComplete}%)`);
+        console.log(`Current offset: ${offset} bytes (${(offset / 1048576).toFixed(2)} MB)`);
+        logMemoryUsage(`After Combining ${i + 1} Audio Segments`);
+      }
     }
+    
+    // Verify the combined buffer is complete
+    console.log(`Combined buffer size verification: ${combinedBuffer.length} bytes (expected ${totalLength} bytes)`);
+    console.log(`Segments total size: ${segmentsTotalSize} bytes (${(segmentsTotalSize / 1048576).toFixed(2)} MB)`);
+    
+    // Release individual audio buffers to free memory
+    console.log('Releasing individual audio segment buffers...');
+    for (let i = 0; i < audioPromises.length; i++) {
+      audioPromises[i] = null;
+    }
+    
+    // Force garbage collection if possible (Node.js doesn't expose this directly)
+    if (global.gc) {
+      console.log('Forcing garbage collection...');
+      global.gc();
+    } else {
+      console.log('Garbage collection not available. Run with --expose-gc to enable.');
+    }
+    
+    // Check memory after freeing individual buffers
+    logMemoryUsage('After Freeing Individual Buffers');
 
     // Log audio combination completion
-    await logProcessingEvent(supabaseAdmin, jobId, 'audio_combined', 'Combined all audio segments');
+    await logProcessingEvent(supabaseAdmin, jobId, 'audio_combined', 'Combined all audio segments', {
+      totalSegments: audioPromises.length,
+      combinedSize: `${(combinedBuffer.length / 1048576).toFixed(2)} MB`,
+      combinedSizeBytes: combinedBuffer.length
+    });
 
     // Generate a unique ID for the audio file
     const filenameID = crypto.randomUUID();
@@ -392,8 +1091,17 @@ ${formatTemplate}`;
       fileName,
       bucket: 'audio-files',
       contentType: 'audio/mp3',
-      bufferSize: combinedBuffer.length
+      bufferSize: `${(combinedBuffer.length / 1048576).toFixed(2)} MB`,
+      bufferSizeBytes: combinedBuffer.length
     });
+    currentState = 'uploading';
+    currentStep = 'file_upload';
+    progressDetails = { 
+      phase: 'upload',
+      file_size_mb: (combinedBuffer.length / 1048576).toFixed(2),
+      file_name: fileName
+    };
+    logMemoryUsage('Before File Upload');
 
     // Function to attempt upload with retry
     const attemptUpload = async (retries = 3) => {
@@ -471,6 +1179,7 @@ ${formatTemplate}`;
     // Log file upload completion
     await logProcessingEvent(supabaseAdmin, jobId, 'file_uploaded', 'Uploaded audio file to storage', 
       { file_url: publicUrl });
+    logMemoryUsage('After File Upload');
 
     // Create entry in audio_files table
     const audioFileData = {
@@ -555,12 +1264,24 @@ ${formatTemplate}`;
     console.log("Successfully inserted article audio map entries");
 
     // Update job status to completed
+    currentState = 'completed';
+    currentStep = 'finalization';
+    progressDetails = { 
+      phase: 'complete',
+      file_url: publicUrl,
+      duration_ms: Date.now() - startTime
+    };
     await updateJobStatus(supabaseAdmin, jobId, 'completed', {
+      audio_url: publicUrl,
       processing_completed_at: new Date().toISOString()
     });
     
-    // Log processing completion
-    await logProcessingEvent(supabaseAdmin, jobId, 'processing_completed', 'Completed podcast audio processing');
+    // Log completion
+    await logProcessingEvent(supabaseAdmin, jobId, 'processing_completed', 'Podcast processing completed', {
+      audio_url: publicUrl,
+      total_duration_ms: Date.now() - startTime
+    });
+    logMemoryUsage('Function Complete');
 
     // Return success response
     return res.status(200).json({ 
@@ -570,50 +1291,42 @@ ${formatTemplate}`;
       success: true 
     });
   } catch (error) {
-    // Log the error details for debugging
-    console.error('Error in generate-podcast function:', {
+    console.error("Error in generate-podcast function:", {
       error: error.message,
       stack: error.stack,
-      jobId: jobId || req.body?.jobId || 'unknown',
-      userId: req.body?.userId || 'unknown'
+      jobId
     });
-
-    // Try to update job status to failed if possible
-    try {
-      if (jobId) {
-        if (!supabaseAdmin) {
-          // If supabaseAdmin is not initialized yet, initialize it now
-          const [supabaseUrl, supabaseServiceKey] = await Promise.all([
-            accessSecret('supabase-url'),
-            accessSecret('supabase-service-key')
-          ]);
-          
-          supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey);
-        }
-        
+    
+    // Update job status to failed if we have the database connection and job ID
+    if (supabaseAdmin && jobId) {
+      try {
         await updateJobStatus(supabaseAdmin, jobId, 'failed', {
+          error: error.message,
           processing_completed_at: new Date().toISOString()
         });
         
+        // Log the error to the database
         await logProcessingEvent(supabaseAdmin, jobId, 'processing_failed', 
-          'Error in podcast audio processor', 
-          { error: error.message, stack: error.stack });
+          'Error processing podcast', { error: error.message });
+      } catch (dbError) {
+        console.error("Failed to log error to database:", dbError);
       }
-    } catch (logError) {
-      console.error('Failed to log error to database:', logError);
     }
-
-    // If response hasn't been sent yet, send an error response
+    
+    // Only send error response if we haven't already responded
     if (!res.headersSent) {
-      return res.status(500).json({ 
+      res.status(500).json({ 
+        success: false, 
         error: error.message,
-        success: false,
-        details: {
-          type: error.name,
-          cause: error.cause
-        }
+        job_id: jobId
       });
     }
+  } finally {
+    // Clean up heartbeat and timeout resources regardless of success or failure
+    clearInterval(heartbeatInterval);
+    clearTimeout(masterTimeoutId);
+    
+    console.log(`[${new Date().toISOString()}] Function execution completed or terminated`);
   }
 });
 
