@@ -357,6 +357,7 @@ async function accessSecret(secretName) {
  * @returns {Promise<Buffer>} - Audio buffer
  */
 async function generateAudioWithTimeout(text, voice, openaiApiKey, timeoutSeconds = 60) {
+  const traceId = trace.start('generateAudioWithTimeout');
   console.log(`[${new Date().toISOString()}] Starting audio generation with timeout for: "${text.substring(0, 50)}..."`);
 
   // Create a direct HTTP request to OpenAI API using axios with timeout
@@ -369,6 +370,7 @@ async function generateAudioWithTimeout(text, voice, openaiApiKey, timeoutSecond
   }, timeoutSeconds * 1000);
   
   try {
+    trace.checkpoint(`Sending OpenAI API request for audio generation (voice: ${voice}, text length: ${text.length})`);
     // Make a direct request to OpenAI API
     const response = await axios({
       method: 'post',
@@ -387,10 +389,15 @@ async function generateAudioWithTimeout(text, voice, openaiApiKey, timeoutSecond
       timeout: timeoutSeconds * 1000 // Axios timeout as backup
     });
     
+    trace.checkpoint(`OpenAI API request successful, received ${response.data.length} bytes`);
     // Convert the response to a buffer
-    return Buffer.from(response.data);
+    const buffer = Buffer.from(response.data);
+    trace.end(traceId, 'generateAudioWithTimeout');
+    return buffer;
   } catch (error) {
+    trace.checkpoint(`OpenAI API request failed: ${error.name || 'Unknown error'}`);
     if (error.name === 'AbortError' || error.code === 'ECONNABORTED') {
+      trace.end(traceId, 'generateAudioWithTimeout - Timed out');
       throw new Error(`Request timed out after ${timeoutSeconds} seconds`);
     }
     
@@ -399,10 +406,123 @@ async function generateAudioWithTimeout(text, voice, openaiApiKey, timeoutSecond
       ? `API error: ${error.response.status} - ${JSON.stringify(error.response.data)}` 
       : error.message;
     
+    trace.end(traceId, 'generateAudioWithTimeout - Failed');
     throw new Error(`Audio generation failed: ${errorMessage}`);
   } finally {
     clearTimeout(timeoutId);
   }
+}
+
+// Helper function to format bytes to human-readable format
+function formatBytes(bytes, decimals = 2) {
+  if (bytes === 0) return '0 Bytes';
+  
+  const k = 1024;
+  const dm = decimals < 0 ? 0 : decimals;
+  const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+  
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+}
+
+// New function to handle batch audio generation
+async function generateAudioBatch(lines, startIndex, batchSize, openaiApiKey, timeoutSeconds = 60) {
+  const traceId = trace.start(`generateAudioBatch (batch: ${startIndex}-${Math.min(startIndex + batchSize, lines.length) - 1})`);
+  const batchEnd = Math.min(startIndex + batchSize, lines.length);
+  const batchPromises = [];
+  const results = new Array(batchEnd - startIndex).fill(null);
+  
+  console.log(`[${new Date().toISOString()}] Processing batch from index ${startIndex} to ${batchEnd-1}`);
+  
+  for (let i = startIndex; i < batchEnd; i++) {
+    const lineIndex = i - startIndex; // relative index within batch
+    const line = lines[i];
+    const cleanedLine = line.replace(/^(Alice|Bob):?\s*/i, '').trim();
+    const isAlice = line.match(/^Alice:?/i);
+    const voice = isAlice ? "alloy" : "onyx";
+    
+    console.log(`Queuing audio generation for line ${i + 1}/${lines.length}: "${cleanedLine.substring(0, 50)}..." with voice: ${voice}`);
+    
+    // Create a promise for each line in the batch
+    const promise = (async (index, text, voiceType, isAliceVoice) => {
+      let retryCount = 0;
+      const maxRetries = 2;
+      let buffer = null;
+      
+      while (retryCount <= maxRetries && !buffer) {
+        try {
+          buffer = await generateAudioWithTimeout(
+            text,
+            voiceType,
+            openaiApiKey,
+            timeoutSeconds
+          );
+          // Store the result in the correct position
+          results[index] = {
+            buffer,
+            voice: voiceType,
+            isAlice: isAliceVoice,
+            error: null
+          };
+          return true;
+        } catch (isolatedError) {
+          retryCount++;
+          console.error(`Isolated process error for line ${i + 1} (attempt ${retryCount}/${maxRetries + 1}):`, isolatedError.message);
+          
+          if (retryCount > maxRetries) {
+            // All retries failed, store the error
+            results[index] = {
+              buffer: null,
+              voice: voiceType,
+              isAlice: isAliceVoice,
+              error: isolatedError
+            };
+            return false;
+          }
+          
+          // Wait a bit before retrying
+          const retryDelay = 2000 * retryCount; // Exponential backoff
+          console.log(`Retrying in ${retryDelay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, retryDelay));
+        }
+      }
+    })(lineIndex, cleanedLine, voice, isAlice);
+    
+    batchPromises.push(promise);
+  }
+  
+  trace.checkpoint(`Started ${batchPromises.length} audio generation tasks`);
+  
+  // Wait for all operations to complete
+  await Promise.all(batchPromises);
+  
+  trace.checkpoint(`Completed all ${batchPromises.length} audio generation tasks`);
+  
+  // Calculate combined size
+  let totalBytes = 0;
+  let successCount = 0;
+  let errorCount = 0;
+  
+  for (const result of results) {
+    if (result && result.buffer) {
+      totalBytes += result.buffer.length;
+      successCount++;
+    } else if (result && result.error) {
+      errorCount++;
+    }
+  }
+  
+  const successRate = (successCount / results.length) * 100;
+  console.log(`Batch completion: ${successCount}/${results.length} successful (${successRate.toFixed(1)}%), total size: ${formatBytes(totalBytes)}`);
+  
+  trace.end(traceId, `generateAudioBatch (success: ${successCount}/${results.length}, ${formatBytes(totalBytes)})`);
+  
+  return {
+    results,
+    startIndex,
+    endIndex: batchEnd - 1
+  };
 }
 
 // Main function handler for GCP Cloud Functions
@@ -424,6 +544,12 @@ functions.http('processPodcastAudio', async (req, res) => {
   let currentState = 'initializing';
   let currentStep = 'startup';
   let progressDetails = {};
+  
+  // Start main process tracing
+  const mainProcessId = trace.start('processPodcastAudio');
+  
+  // Near the beginning of your main function
+  const watchdog = startWatchdog(120000, 30000); // 2 min stuck threshold, 30 sec check interval
   
   // Master timeout for the entire function (30 minutes)
   const masterTimeoutId = setTimeout(() => {
@@ -449,6 +575,9 @@ functions.http('processPodcastAudio', async (req, res) => {
       console.error('Failed to update job status or log event on timeout', e);
     }
     
+    // End tracing
+    trace.end(mainProcessId, 'processPodcastAudio - Timed out');
+    
     // Force exit with error code after a short delay to allow logs to flush
     setTimeout(() => process.exit(1), 2000);
   }, 30 * 60 * 1000); // 30 minutes in milliseconds
@@ -464,10 +593,13 @@ functions.http('processPodcastAudio', async (req, res) => {
     
     // Log request received
     console.log("Podcast audio processor function called");
+    trace.checkpoint('Request received and validated');
     
     // Get the request data
     const { articles, jobId: requestJobId, userId, authToken } = req.body;
     jobId = requestJobId; // Store jobId in the outer scope for error handling
+    
+    updateProgress('request_parsing', { articleCount: articles?.length, jobId, userId });
     
     console.log("Received articles:", JSON.stringify(articles, null, 2));
     console.log("Job ID:", jobId);
@@ -476,26 +608,31 @@ functions.http('processPodcastAudio', async (req, res) => {
     // Validate request data
     if (!articles || !Array.isArray(articles)) {
       console.error("Invalid articles format:", articles);
+      trace.end(mainProcessId, 'processPodcastAudio - Invalid articles format');
       return res.status(400).json({ error: "Articles must be an array", success: false });
     }
 
     if (articles.length === 0) {
       console.error("Empty articles array");
+      trace.end(mainProcessId, 'processPodcastAudio - Empty articles array');
       return res.status(400).json({ error: "At least one article is required", success: false });
     }
 
     if (!jobId) {
       console.error("Missing job ID");
+      trace.end(mainProcessId, 'processPodcastAudio - Missing job ID');
       return res.status(400).json({ error: "Job ID is required", success: false });
     }
 
     if (!userId) {
       console.error("Missing user ID");
+      trace.end(mainProcessId, 'processPodcastAudio - Missing user ID');
       return res.status(400).json({ error: "User ID is required", success: false });
     }
 
     if (!authToken) {
       console.error("Missing auth token");
+      trace.end(mainProcessId, 'processPodcastAudio - Missing auth token');
       return res.status(400).json({ error: "Auth token is required", success: false });
     }
 
@@ -527,6 +664,8 @@ functions.http('processPodcastAudio', async (req, res) => {
 
     console.log("Finished accessing secrets")
     currentState = 'initializing_clients';
+    // Update progress for watchdog
+    updateProgress('initializing_clients', { stage: 'setup' });
 
     // Initialize OpenAI with the API key
     const openai = new OpenAI({ apiKey: openaiApiKey });
@@ -557,6 +696,13 @@ functions.http('processPodcastAudio', async (req, res) => {
     currentStep = 'starting';
     await updateJobStatus(supabaseAdmin, jobId, 'processing', {
       processing_started_at: new Date().toISOString()
+    });
+    
+    // Update progress for watchdog
+    updateProgress('processing_started', { 
+      jobId, 
+      articlesCount: articles.length, 
+      startTime: new Date().toISOString() 
     });
     
     // Log processing start
@@ -618,6 +764,16 @@ Continue this structure with natural conversation flow.`;
     const allArticleTitles = articles.map(article => article.title);
     
     console.log("Generating introduction...");
+    
+    // Start generating content
+    currentState = 'generating_content';
+    currentStep = 'script_generation';
+    
+    // Update progress for watchdog
+    updateProgress('generating_content', { 
+      stage: 'script_generation',
+      articles: articles.length 
+    });
     
     // Generate introduction using rate limiter
     currentState = 'generating_content';
@@ -880,11 +1036,16 @@ ${formatTemplate}`;
     console.log("Conclusion generated");
     logMemoryUsage('After Conclusion Generation');
     
-    // Assemble the full script
+    // Combine all scripts for the articles
     console.log("Assembling final script...");
     currentState = 'assembling_script';
-    currentStep = 'script_combination';
-    progressDetails = { phase: 'script_assembly' };
+    currentStep = 'script_assembly';
+    
+    // Update progress for watchdog
+    updateProgress('assembling_script', { 
+      stage: 'script_assembly',
+      articlesSummaries: articleScripts.length 
+    });
     
     const script = [
       introScript,
@@ -918,92 +1079,93 @@ ${formatTemplate}`;
     // Log rate limiter status before audio generation
     console.log("Rate limiter status before audio generation:", openaiRateLimiter.getStatus());
 
-    for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
-      const line = lines[lineIndex];
-      const cleanedLine = line.replace(/^(Alice|Bob):?\s*/i, '').trim();
-      // Determine if this is Alice or Bob
-      const isAlice = line.match(/^Alice:?/i);
-      const voice = isAlice ? "alloy" : "onyx";
+    // Define batch processing parameters
+    const BATCH_SIZE = 5; // Process 5 lines at a time
+    
+    // Process in batches
+    for (let batchStart = 0; batchStart < lines.length; batchStart += BATCH_SIZE) {
+      // Update progress for heartbeat at batch level
+      progressDetails.current_line = batchStart + 1;
+      progressDetails.progress_percent = Math.round(((batchStart + 1) / lines.length) * 100);
       
-      // Update progress for heartbeat
-      progressDetails.current_line = lineIndex + 1;
-      progressDetails.progress_percent = Math.round(((lineIndex + 1) / lines.length) * 100);
+      // Process this batch
+      console.log(`[${new Date().toISOString()}] Starting batch processing from line ${batchStart + 1}`);
       
-      console.log(`Generating audio for line ${lineIndex + 1}/${lines.length}: "${cleanedLine.substring(0, 50)}..." with voice: ${voice}`);
+      // Update progress for watchdog
+      updateProgress('generating_audio', { 
+        batch: batchStart, 
+        totalBatches: Math.ceil(lines.length / BATCH_SIZE),
+        progress: Math.round((batchStart / lines.length) * 100) + '%',
+        currentLine: batchStart + 1,
+        totalLines: lines.length
+      });
       
-      try {
-        // Use process isolation instead of direct API call
-        console.log(`[${new Date().toISOString()}] Starting isolated audio generation for line ${lineIndex + 1}`);
+      const batchResult = await generateAudioBatch(
+        lines, 
+        batchStart, 
+        BATCH_SIZE,
+        openaiApiKey,
+        60 // 60 second timeout
+      );
+      
+      // Process the results of this batch
+      for (let i = 0; i < batchResult.results.length; i++) {
+        const lineResult = batchResult.results[i];
+        const actualIndex = batchStart + i;
         
-        // Set a maximum retry count
-        let retryCount = 0;
-        const maxRetries = 2;
-        let buffer = null;
-        
-        // Retry loop for resilience
-        while (retryCount <= maxRetries && !buffer) {
-          try {
-            // Generate audio in an isolated process with a 60-second timeout
-            buffer = await generateAudioWithTimeout(
-              cleanedLine,
-              voice,
-              openaiApiKey,
-              60 // 60 second timeout
-            );
-          } catch (isolatedError) {
-            retryCount++;
-            console.error(`Isolated process error (attempt ${retryCount}/${maxRetries + 1}):`, isolatedError.message);
+        if (lineResult && lineResult.buffer) {
+          // Add to our array of buffers and metadata
+          audioPromises.push(lineResult.buffer);
+          audioMetadata.push({ 
+            isAlice: lineResult.isAlice, 
+            voice: lineResult.voice 
+          });
+          
+          // Track buffer size
+          cumulativeAudioBufferSize += lineResult.buffer.length;
+          
+          console.log(`[${new Date().toISOString()}] Successfully added audio for line ${actualIndex + 1}`);
+        } else if (lineResult && lineResult.error) {
+          console.error(`Error generating audio for line ${actualIndex + 1}/${lines.length}`, lineResult.error);
+          
+          // Log the error to the database
+          await logProcessingEvent(supabaseAdmin, jobId, 'audio_generation_error', 
+            `Error generating audio for line ${actualIndex + 1}/${lines.length}`, 
+            { error: lineResult.error.message });
             
-            if (retryCount <= maxRetries) {
-              // Wait a bit before retrying
-              const retryDelay = 2000 * retryCount; // Exponential backoff
-              console.log(`Retrying in ${retryDelay}ms...`);
-              await new Promise(resolve => setTimeout(resolve, retryDelay));
-            } else {
-              // Max retries exceeded, rethrow
-              throw new Error(`Failed to generate audio after ${maxRetries + 1} attempts: ${isolatedError.message}`);
-            }
-          }
+          // Create a small empty buffer as a placeholder for the failed segment
+          // This allows the process to continue rather than failing completely
+          console.log(`Using silent placeholder for failed line ${actualIndex + 1}`);
+          const silentBuffer = Buffer.alloc(1000); // Small buffer of silence
+          audioPromises.push(silentBuffer);
+          audioMetadata.push({ 
+            isAlice: lineResult.isAlice, 
+            voice: lineResult.voice 
+          });
+          cumulativeAudioBufferSize += silentBuffer.length;
         }
-        
-        // Store the buffer
-        audioPromises.push(buffer);
-        audioMetadata.push({ isAlice, voice });
-        
-        // Track cumulative buffer size
-        cumulativeAudioBufferSize += buffer.length;
-        
-        console.log(`[${new Date().toISOString()}] Successfully added audio for line ${lineIndex + 1}`);
-        
-        // Log progress every 5 lines
-        if ((lineIndex + 1) % 5 === 0 || lineIndex === lines.length - 1) {
-          console.log(`Progress: ${lineIndex + 1}/${lines.length} lines processed (${Math.round((lineIndex + 1) / lines.length * 100)}%)`);
-          logMemoryUsage(`After ${lineIndex + 1} Audio Segments`);
-          logBufferSizes(audioPromises, `Audio Buffer after ${lineIndex + 1} segments`);
-          console.log(`Cumulative audio buffer size: ${(cumulativeAudioBufferSize / 1048576).toFixed(2)} MB`);
-          console.log("Rate limiter status:", openaiRateLimiter.getStatus());
-        }
-      } catch (error) {
-        console.error(`Error generating audio for line ${lineIndex + 1}/${lines.length}: "${cleanedLine.substring(0, 50)}..."`, error);
-        // Log the error to the database
-        await logProcessingEvent(supabaseAdmin, jobId, 'audio_generation_error', 
-          `Error generating audio for line ${lineIndex + 1}/${lines.length}: "${cleanedLine.substring(0, 50)}..."`, 
-          { error: error.message });
-        
-        // Create a small empty buffer as a placeholder for the failed segment
-        // This allows the process to continue rather than failing completely
-        console.log(`Using silent placeholder for failed line ${lineIndex + 1}`);
-        const silentBuffer = Buffer.alloc(1000); // Small buffer of silence
-        audioPromises.push(silentBuffer);
-        audioMetadata.push({ isAlice, voice });
-        cumulativeAudioBufferSize += silentBuffer.length;
       }
+      
+      // Update progress after processing the batch
+      progressDetails.current_line = Math.min(batchStart + BATCH_SIZE, lines.length);
+      progressDetails.progress_percent = Math.round(((progressDetails.current_line) / lines.length) * 100);
+      
+      // Log progress after batch
+      const currentLine = Math.min(batchStart + BATCH_SIZE, lines.length);
+      console.log(`Progress: ${currentLine}/${lines.length} lines processed (${Math.round(currentLine / lines.length * 100)}%)`);
+      logMemoryUsage(`After ${currentLine} Audio Segments`);
+      logBufferSizes(audioPromises, `Audio Buffer after ${currentLine} segments`);
+      console.log(`Cumulative audio buffer size: ${(cumulativeAudioBufferSize / 1048576).toFixed(2)} MB`);
+      console.log("Rate limiter status:", openaiRateLimiter.getStatus());
     }
 
     console.log(`Generated ${audioPromises.length} audio segments with alternating voices`);
     logMemoryUsage('After All Audio Generation');
     logBufferSizes(audioPromises, 'Final Audio Segments');
 
+    // Log rate limiter status after audio generation
+    console.log("Rate limiter status after audio generation:", openaiRateLimiter.getStatus());
+    
     // Log audio generation completion
     await logProcessingEvent(supabaseAdmin, jobId, 'audio_generated', 'Generated all audio segments', {
       audioSegments: audioPromises.length,
@@ -1011,15 +1173,19 @@ ${formatTemplate}`;
       averageSegmentSize: `${(cumulativeAudioBufferSize / audioPromises.length / 1024).toFixed(2)} KB`
     });
 
-    // Combine all audio buffers
-    console.log("Combining audio buffers...");
+    console.log(`[${new Date().toISOString()}] All audio segments generated. Combining audio.`);
     currentState = 'combining_audio';
     currentStep = 'audio_combination';
-    progressDetails = { 
-      phase: 'audio_combination',
-      total_segments: audioPromises.length,
-      buffer_size_mb: (cumulativeAudioBufferSize / 1048576).toFixed(2)
-    };
+    
+    // Update progress for watchdog
+    updateProgress('combining_audio', { 
+      segments: audioPromises.length,
+      totalSegments: lines.length,
+      totalSizeMB: (cumulativeAudioBufferSize / 1048576).toFixed(2)
+    });
+
+    // Combine all audio buffers
+    console.log("Combining audio buffers...");
     const totalLength = audioPromises.reduce((acc, buf) => acc + buf.length, 0);
     console.log(`Total audio size: ${(totalLength / 1048576).toFixed(2)} MB (${totalLength} bytes)`);
     
@@ -1101,6 +1267,13 @@ ${formatTemplate}`;
       file_size_mb: (combinedBuffer.length / 1048576).toFixed(2),
       file_name: fileName
     };
+    
+    // Update progress for watchdog
+    updateProgress('uploading', { 
+      phase: 'upload',
+      file_size_mb: (combinedBuffer.length / 1048576).toFixed(2),
+      file_name: fileName
+    });
     logMemoryUsage('Before File Upload');
 
     // Function to attempt upload with retry
@@ -1109,6 +1282,9 @@ ${formatTemplate}`;
         try {
           // Upload the combined audio to Supabase storage
           console.log(`Upload attempt ${i + 1} of ${retries}...`);
+          const uploadTraceId = trace.start(`Upload attempt ${i + 1} of ${retries}`);
+          trace.checkpoint(`Initiating storage upload for file: ${fileName} (${formatBytes(combinedBuffer.length)})`);
+          
           const { data, error } = await supabaseAdmin.storage
             .from('audio-files')
             .upload(fileName, combinedBuffer, {
@@ -1117,6 +1293,7 @@ ${formatTemplate}`;
             });
 
           if (error) {
+            trace.checkpoint(`Upload failed with error: ${error.message}`);
             console.error(`Upload attempt ${i + 1} failed:`, {
               message: error.message,
               details: error.details,
@@ -1130,12 +1307,16 @@ ${formatTemplate}`;
               `Upload attempt ${i + 1} failed: ${error.message}`, 
               { details: error.details, status: error.status });
               
+            trace.end(uploadTraceId, `Upload attempt ${i + 1} - Failed`);
             if (i === retries - 1) throw error;
           } else {
+            trace.checkpoint(`Upload succeeded, response received`);
             console.log('Upload successful:', data);
+            trace.end(uploadTraceId, `Upload attempt ${i + 1} - Succeeded`);
             return data;
           }
         } catch (err) {
+          trace.checkpoint(`Upload caught exception: ${err.message}`);
           if (i === retries - 1) throw err;
           // Wait before retry
           await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1)));
@@ -1175,11 +1356,18 @@ ${formatTemplate}`;
     const { data: { publicUrl } } = supabaseAdmin.storage
       .from('audio-files')
       .getPublicUrl(fileName);
+    console.log(`File public URL: ${publicUrl}`);
 
     // Log file upload completion
     await logProcessingEvent(supabaseAdmin, jobId, 'file_uploaded', 'Uploaded audio file to storage', 
       { file_url: publicUrl });
     logMemoryUsage('After File Upload');
+    
+    // Update progress for watchdog - database updates
+    updateProgress('updating_database', { 
+      phase: 'database',
+      file_url: publicUrl
+    });
 
     // Create entry in audio_files table
     const audioFileData = {
@@ -1271,6 +1459,17 @@ ${formatTemplate}`;
       file_url: publicUrl,
       duration_ms: Date.now() - startTime
     };
+    
+    trace.checkpoint('Processing completed successfully, updating job status');
+    
+    // Update progress for watchdog - completed
+    updateProgress('completed', { 
+      duration_ms: Date.now() - startTime,
+      file_url: publicUrl,
+      total_lines: lines.length,
+      total_size_mb: (combinedBuffer.length / 1048576).toFixed(2)
+    });
+    
     await updateJobStatus(supabaseAdmin, jobId, 'completed', {
       audio_url: publicUrl,
       processing_completed_at: new Date().toISOString()
@@ -1283,6 +1482,16 @@ ${formatTemplate}`;
     });
     logMemoryUsage('Function Complete');
 
+    // At the end of your function
+    watchdog.stop();
+
+    // At the end of your function or when handling errors
+    const summary = trace.summary();
+    // This will log the top 5 longest operations and return all timing data
+    
+    // End the main process trace
+    trace.end(mainProcessId, 'processPodcastAudio - Completed Successfully');
+
     // Return success response
     return res.status(200).json({ 
       audio_file_id: audioFile.id,
@@ -1291,14 +1500,19 @@ ${formatTemplate}`;
       success: true 
     });
   } catch (error) {
-    console.error("Error in generate-podcast function:", {
+    console.error("Error processing podcast:", error);
+    trace.checkpoint(`Error encountered: ${error.message}`);
+    
+    // Update progress to show error
+    updateProgress('error', { 
       error: error.message,
       stack: error.stack,
-      jobId
+      currentState,
+      currentStep
     });
     
-    // Update job status to failed if we have the database connection and job ID
-    if (supabaseAdmin && jobId) {
+    // Update the job status to failed if we have a job ID and Supabase client
+    if (jobId && supabaseAdmin) {
       try {
         await updateJobStatus(supabaseAdmin, jobId, 'failed', {
           error: error.message,
@@ -1310,6 +1524,7 @@ ${formatTemplate}`;
           'Error processing podcast', { error: error.message });
       } catch (dbError) {
         console.error("Failed to log error to database:", dbError);
+        trace.checkpoint(`Failed to log error to database: ${dbError.message}`);
       }
     }
     
@@ -1321,12 +1536,24 @@ ${formatTemplate}`;
         job_id: jobId
       });
     }
+    
+    trace.end(mainProcessId, `processPodcastAudio - Failed: ${error.message}`);
   } finally {
     // Clean up heartbeat and timeout resources regardless of success or failure
     clearInterval(heartbeatInterval);
     clearTimeout(masterTimeoutId);
     
+    // Stop the watchdog
+    watchdog.stop();
+    
+    // Generate trace summary
+    const traceSummary = trace.summary();
     console.log(`[${new Date().toISOString()}] Function execution completed or terminated`);
+    
+    // End tracing if not already ended (in case of success path)
+    if (mainProcessId && trace.points.some(p => p.id === mainProcessId && p.status === 'started')) {
+      trace.end(mainProcessId, 'processPodcastAudio - Completed');
+    }
   }
 });
 
@@ -1367,4 +1594,131 @@ async function logProcessingEvent(supabaseClient, jobId, eventType, message, det
   } else {
     console.log(`Logged processing event: ${eventType} - ${message}`);
   }
-} 
+}
+
+/**
+ * Comprehensive tracing system to track execution flow and timing
+ */
+const trace = {
+  points: [],
+  start: (operation) => {
+    const id = Date.now();
+    console.log(`[TRACE:START][${id}] ${operation}`);
+    trace.points.push({ id, operation, status: 'started', timestamp: new Date().toISOString() });
+    return id;
+  },
+  end: (id, operation) => {
+    console.log(`[TRACE:END][${id}] ${operation} - Duration: ${Date.now() - id}ms`);
+    trace.points.push({ id, operation, status: 'completed', timestamp: new Date().toISOString() });
+  },
+  checkpoint: (name) => {
+    console.log(`[TRACE:CHECKPOINT] ${name} at ${new Date().toISOString()}`);
+    trace.points.push({ name, status: 'checkpoint', timestamp: new Date().toISOString() });
+  },
+  summary: () => {
+    console.log(`[TRACE:SUMMARY] ${trace.points.length} trace points collected`);
+    
+    // Calculate durations for completed operations
+    const completedOperations = [];
+    const startPoints = trace.points.filter(p => p.status === 'started');
+    
+    for (const startPoint of startPoints) {
+      const endPoint = trace.points.find(p => 
+        p.status === 'completed' && 
+        p.id === startPoint.id && 
+        p.operation === startPoint.operation
+      );
+      
+      if (endPoint) {
+        const startTime = new Date(startPoint.timestamp).getTime();
+        const endTime = new Date(endPoint.timestamp).getTime();
+        const duration = endTime - startTime;
+        
+        completedOperations.push({
+          operation: startPoint.operation,
+          duration,
+          startTimestamp: startPoint.timestamp,
+          endTimestamp: endPoint.timestamp
+        });
+      }
+    }
+    
+    // Sort by duration (longest first)
+    completedOperations.sort((a, b) => b.duration - a.duration);
+    
+    console.log('[TRACE:TIMING_SUMMARY] Top 5 longest operations:');
+    for (let i = 0; i < Math.min(5, completedOperations.length); i++) {
+      const op = completedOperations[i];
+      console.log(`  ${i+1}. ${op.operation}: ${op.duration}ms`);
+    }
+    
+    return {
+      points: trace.points,
+      completedOperations
+    };
+  }
+};
+
+/**
+ * Watchdog to detect when the function is stuck
+ */
+let lastProgress = { stage: 'init', timestamp: Date.now() };
+let watchdogInterval = null;
+
+const updateProgress = (stage, details = {}) => {
+  lastProgress = { stage, timestamp: Date.now(), details };
+  console.log(`[PROGRESS] ${stage}`, details);
+  
+  // Also add as a trace checkpoint
+  trace.checkpoint(`Progress: ${stage}`);
+};
+
+const startWatchdog = (stuckThresholdMs = 120000, checkIntervalMs = 30000) => {
+  // Clear any existing watchdog
+  if (watchdogInterval) {
+    clearInterval(watchdogInterval);
+  }
+  
+  console.log(`[WATCHDOG] Starting with check interval ${checkIntervalMs}ms, stuck threshold ${stuckThresholdMs}ms`);
+  
+  watchdogInterval = setInterval(() => {
+    const now = Date.now();
+    const sinceLastProgress = now - lastProgress.timestamp;
+    
+    if (sinceLastProgress > stuckThresholdMs) { // Default: 2 minutes without progress
+      console.error(`[WATCHDOG] Function appears stuck in stage '${lastProgress.stage}' for ${Math.floor(sinceLastProgress/1000)}s`);
+      console.error('[WATCHDOG] Last progress details:', lastProgress.details);
+      
+      // Force log of current memory usage
+      logMemoryUsage('WATCHDOG');
+      
+      // You could implement recovery logic here
+      // or force the function to return a partial result
+    } else {
+      console.log(`[WATCHDOG] Function active - last progress ${Math.floor(sinceLastProgress/1000)}s ago in stage '${lastProgress.stage}'`);
+    }
+  }, checkIntervalMs);
+  
+  return {
+    stop: () => {
+      if (watchdogInterval) {
+        clearInterval(watchdogInterval);
+        watchdogInterval = null;
+        console.log('[WATCHDOG] Stopped');
+      }
+    },
+    forceCheck: () => {
+      const now = Date.now();
+      const sinceLastProgress = now - lastProgress.timestamp;
+      console.log(`[WATCHDOG:FORCE_CHECK] Last progress ${Math.floor(sinceLastProgress/1000)}s ago in stage '${lastProgress.stage}'`);
+    }
+  };
+};
+
+// Export these functions to make them available throughout the codebase
+module.exports = {
+  // ... existing exports
+  trace,
+  updateProgress,
+  startWatchdog
+}; 
