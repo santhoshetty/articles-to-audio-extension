@@ -1,119 +1,98 @@
-# Generate Podcast - GCP Cloud Function
+# Podcast Generator Cloud Function
 
-This Cloud Function processes podcast audio for the Articles to Audio Extension. It's designed to run on Google Cloud Platform (GCP) Cloud Functions (2nd gen) with a longer timeout to handle the entire podcast generation process.
+This GCP Cloud Function takes article content, generates a podcast script with two hosts discussing the articles, converts the script to audio using OpenAI's TTS, and stores the result in Supabase.
 
-## Prerequisites
+## Project Structure
 
-- Node.js 18+
-- Google Cloud SDK (gcloud CLI)
-- GCP Project with Cloud Functions, Secret Manager, and Pub/Sub APIs enabled
-- Supabase project with the required database schema
+The project has been refactored into a modular structure:
 
-## Setup
-
-1. **Create required secrets in GCP Secret Manager:**
-   - `openai-api-key`: Your OpenAI API key
-   - `supabase-url`: Your Supabase project URL
-   - `supabase-service-key`: Your Supabase service role key
-
-2. **Grant the Cloud Function service account access to Secret Manager:**
-   ```bash
-   gcloud projects add-iam-policy-binding PROJECT_ID \
-     --member="serviceAccount:PROJECT_ID@appspot.gserviceaccount.com" \
-     --role="roles/secretmanager.secretAccessor"
-   ```
-
-3. **Install dependencies:**
-   ```bash
-   npm install
-   ```
-
-## Local Testing
-
-To test the function locally:
-
-```bash
-export PROJECT_ID=your-gcp-project-id
-npm start
+```
+.
+├── index.js                 # Main entry point for the Cloud Function
+├── src/
+│   ├── handlers/            # Request handlers
+│   │   └── podcastHandler.js # Main logic for podcast generation
+│   ├── services/            # Service modules
+│   │   ├── audio.js         # Audio generation and processing
+│   │   ├── content.js       # Script content generation
+│   │   ├── database.js      # Database operations
+│   │   └── secrets.js       # Secret management
+│   ├── utils/               # Utility modules
+│   │   ├── logging.js       # Logging utilities including trace
+│   │   ├── monitoring.js    # Watchdog and progress monitoring
+│   │   └── rateLimiter.js   # Rate limiting for API calls
+│   └── config/              # Configuration (not used yet)
+└── test.js                  # Test script
 ```
 
-Then send a POST request to `http://localhost:8080` with the required payload.
+## Functionality
 
-## Deployment
+1. **Request Handling**: The function receives a request with article data, job ID, and user information.
+2. **Script Generation**: It generates a podcast script with two hosts (Alice and Bob) discussing the articles.
+3. **Audio Generation**: The script is converted to audio using OpenAI's TTS API with different voices for each host.
+4. **Storage**: The audio file is stored in Supabase storage and linked to the articles in the database.
 
-Deploy the function to GCP:
+## Key Features
 
-```bash
-npm run deploy
+- **Rate Limiting**: Manages API request rates to avoid hitting OpenAI's rate limits
+- **Batch Processing**: Audio generation is done in batches to optimize performance
+- **Error Handling**: Robust error handling with retries and fallbacks
+- **Monitoring**: Watchdog and progress tracking to detect stuck processes
+- **Tracing**: Comprehensive tracing system to track execution flow and timing
+- **Memory Management**: Careful memory management for handling large audio files
+
+## API Usage
+
+The function handler is registered in `index.js`:
+
+```javascript
+functions.http('processPodcastAudio', processPodcastAudio);
 ```
 
-Or manually:
-
-```bash
-gcloud functions deploy generate-podcast \
-  --gen2 \
-  --runtime=nodejs18 \
-  --region=us-central1 \
-  --source=. \
-  --entry-point=processPodcastAudio \
-  --trigger-http \
-  --timeout=3600s \
-  --set-env-vars PROJECT_ID=your-gcp-project-id
-```
-
-## Function Parameters
-
-The function expects a POST request with the following JSON body:
+### Request Format
 
 ```json
 {
   "articles": [
     {
-      "id": "article-id",
+      "id": "article-uuid",
       "title": "Article Title",
       "content": "Article content...",
-      "summary": "Optional summary..."
+      "summary": "Article summary (optional)"
     }
   ],
-  "jobId": "podcast-job-id",
-  "userId": "user-id",
-  "authToken": "jwt-token"
+  "jobId": "job-uuid",
+  "userId": "user-uuid",
+  "authToken": "auth-token"
 }
 ```
 
-## Response
+### Response
 
-The function returns a JSON response with the following structure:
+The function returns a 200 response immediately to prevent timeouts, then processes the request asynchronously.
 
-```json
-{
-  "audio_file_id": "audio-file-id",
-  "audio_url": "https://public-url-to-audio-file.mp3",
-  "job_id": "podcast-job-id",
-  "success": true
-}
+## Development
+
+### Local Testing
+
+To run the function locally:
+
+```bash
+npm run start
 ```
 
-## Error Handling
+### Deployment
 
-If an error occurs, the function returns a JSON response with the following structure:
+To deploy to GCP:
 
-```json
-{
-  "error": "Error message",
-  "success": false,
-  "details": {
-    "type": "Error type",
-    "cause": "Error cause"
-  }
-}
+```bash
+npm run deploy
 ```
 
-## Database Schema
+## Dependencies
 
-The function interacts with the following Supabase tables:
-
-- `podcast_jobs`: Tracks the status of podcast generation jobs
-- `processing_logs`: Logs events during podcast processing
-- `audio_files`: Stores metadata about generated audio files
-- `article_audio`: Maps articles to audio files 
+- `@google-cloud/functions-framework`: Framework for Cloud Functions
+- `@google-cloud/secret-manager`: For accessing secrets
+- `@supabase/supabase-js`: Supabase client
+- `openai`: OpenAI API client
+- `axios`: HTTP client for direct API calls 
