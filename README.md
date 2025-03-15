@@ -3,7 +3,7 @@
 ## Installation
 
 ### Chrome Web Store (Recommended)
-1. Visit the [Chrome Web Store page](https://chrome.google.com/webstore/detail/YOUR_EXTENSION_ID) for this extension
+1. Visit the [Chrome Web Store page](https://chrome.google.com/webstore/detail/djmkcbonjngdlfpkpkngfgkndjjpfaim) for this extension
 2. Click "Add to Chrome" to install the extension
 3. The extension icon will appear in your browser toolbar
 
