@@ -1,7 +1,0 @@
-{
-    "mcpServers": {
-        "supabase": {
-            "command": "/Users/santhoshetty/.local/bin/supabase-mcp-server"
-        }
-    }
-}
