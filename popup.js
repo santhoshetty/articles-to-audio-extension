@@ -1,49 +1,13 @@
 // popup.js
+import { saveArticle } from './db.js';
+import { generateSummary, generateTitle } from './openai.js';
+import { getSetting } from './db.js';
 
-// Import the Supabase client
-import supabase from './supabaseClient';
-
-// Function to sign in with Google
-async function signInWithGoogle() {
-    console.log('Popup: Starting Google sign-in process...');
-    try {
-        // Disable the sign-in button and show loading state
-        const signInButton = document.getElementById('sign-in-button');
-        signInButton.disabled = true;
-        signInButton.textContent = 'Signing in...';
-        
-        // Set auth in progress flag
-        await chrome.storage.local.set({ auth_in_progress: true });
-        
-        // Delegate sign-in to background script
-        const response = await chrome.runtime.sendMessage({ action: "GOOGLE_SIGN_IN" });
-        console.log('Popup: Received sign-in response:', response);
-        
-        if (!response || !response.success) {
-            throw new Error(response?.error || 'Failed to sign in');
-        }
-        
-        console.log('Popup: Sign-in successful');
-        
-        // Update UI with the new session
-        updateUIForAuthState(true, response.session.user.email);
-        showStatus('Successfully signed in with Google', 'success');
-        
-    } catch (error) {
-        console.error('Popup: Error in sign-in process:', error);
-        showStatus(error.message || 'Failed to sign in', 'error');
-        updateUIForAuthState(false);
-    } finally {
-        // Clear auth in progress flag
-        await chrome.storage.local.remove('auth_in_progress');
-        // Re-enable the sign-in button and restore text
-        const signInButton = document.getElementById('sign-in-button');
-        signInButton.disabled = false;
-        signInButton.textContent = 'Sign in with Google';
-    }
-}
-
-// Function to show status messages
+/**
+ * Show status messages
+ * @param {string} message - Message to display
+ * @param {string} type - Type of message (success, error, etc.)
+ */
 function showStatus(message, type) {
     const statusMessage = document.getElementById("statusMessage");
     statusMessage.textContent = message;
@@ -54,85 +18,66 @@ function showStatus(message, type) {
     }, 3000);
 }
 
-// Session management functions
-async function checkSession() {
-    console.log('Checking current session status...');
-    const { data: { session }, error } = await supabase.auth.getSession();
-    
-    if (error) {
-        console.error('Error checking session:', error.message);
-        return null;
+/**
+ * Verify content script is working
+ * @param {number} tabId - Tab ID to check
+ * @returns {Promise<boolean>} Whether content script is responsive
+ */
+async function verifyContentScript(tabId) {
+    try {
+        const response = await chrome.tabs.sendMessage(tabId, { action: "PING" });
+        console.log("Content script ping response:", response);
+        return response && response.status === "PONG";
+    } catch (error) {
+        console.warn("Content script ping failed:", error);
+        return false;
     }
-    
-    if (session) {
-        console.log('Active session found:', {
-            user: session.user.email,
-            expires_at: session.expires_at
-        });
-        return session;
-    }
-    
-    console.log('No active session found');
-    return null;
 }
 
-async function refreshSession() {
-    console.log('Attempting to refresh session...');
-    const { data: { session }, error } = await supabase.auth.refreshSession();
+/**
+ * Extract article content with multiple fallback strategies
+ * @param {number} tabId - Tab ID to extract from
+ * @returns {Promise<Object>} The extracted article data
+ */
+async function extractArticleWithFallbacks(tabId) {
+    console.log("Starting article extraction with fallbacks for tab", tabId);
     
-    if (error) {
-        console.error('Session refresh failed:', error.message);
-        return null;
-    }
-    
-    if (session) {
-        console.log('Session refreshed successfully:', {
-            user: session.user.email,
-            new_expires_at: new Date(session.expires_at).toLocaleString()
-        });
-        return session;
-    }
-    
-    console.log('No session to refresh');
-    return null;
-}
-
-async function handleSignOut() {
-    console.log('Initiating sign out process...');
-    const { error } = await supabase.auth.signOut();
-    
-    if (error) {
-        console.error('Sign out failed:', error.message);
-        showStatus('Failed to sign out', 'error');
-        return;
-    }
-    
-    console.log('User signed out successfully');
-    showStatus('Signed out successfully', 'success');
-    updateUIForAuthState(false);
-}
-
-function updateUIForAuthState(isAuthenticated, userEmail = null) {
-    console.log('Updating UI for auth state:', { isAuthenticated, userEmail });
-    
-    const signInButton = document.getElementById('sign-in-button');
-    const saveArticleBtn = document.getElementById('saveArticleBtn');
-    const showArticlesBtn = document.getElementById('showArticlesBtn');
-    
-    if (isAuthenticated) {
-        signInButton.textContent = `Sign out (${userEmail})`;
-        signInButton.removeEventListener('click', signInWithGoogle);
-        signInButton.addEventListener('click', handleSignOut);
+    // Try the normal extraction first
+    try {
+        const extractPromise = chrome.tabs.sendMessage(tabId, { action: "EXTRACT_ARTICLE" });
+        const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error("Article extraction timed out")), 15000)
+        );
         
-        saveArticleBtn.disabled = false;
-        showArticlesBtn.disabled = false;
-    } else {
-        signInButton.textContent = 'Sign in with Google';
-        signInButton.removeEventListener('click', handleSignOut);
-        signInButton.addEventListener('click', signInWithGoogle);
+        const articleData = await Promise.race([extractPromise, timeoutPromise]);
         
-        saveArticleBtn.disabled = true;
-        showArticlesBtn.disabled = true;
+        if (articleData && articleData.text && articleData.text.length >= 100) {
+            console.log("Successfully extracted article with normal method");
+            return articleData;
+        }
+        
+        throw new Error(articleData?.error || "Extracted content too short or empty");
+    } catch (error) {
+        console.warn("Primary extraction failed:", error);
+        
+        // Try fallback: using background script extraction
+        console.log("Trying fallback extraction via background script...");
+        try {
+            const response = await chrome.runtime.sendMessage({
+                action: "EXTRACT_ARTICLE_FALLBACK",
+                tabId: tabId
+            });
+            
+            if (response && response.text && response.text.length >= 100) {
+                console.log("Successfully extracted article with fallback method");
+                return response;
+            }
+            
+            throw new Error("Fallback extraction failed to get substantial content");
+        } catch (fallbackError) {
+            console.error("Fallback extraction also failed:", fallbackError);
+            throw new Error("Failed to extract article content after multiple attempts");
+        }
     }
 }
 
@@ -140,60 +85,18 @@ function updateUIForAuthState(isAuthenticated, userEmail = null) {
 document.addEventListener('DOMContentLoaded', async () => {
     console.log('Extension popup opened, initializing...');
     
-    try {
-        // First check if we have a session in chrome.storage.local
-        const storedSession = await chrome.storage.local.get('supabase.auth.token');
-        let session = storedSession['supabase.auth.token'];
-        
-        if (!session) {
-            // If no stored session, check with background script
-            const response = await chrome.runtime.sendMessage({ action: "GET_SESSION" });
-            session = response.session;
-        }
-        
-        if (session) {
-            console.log('Found existing session, updating UI...');
-            updateUIForAuthState(true, session.user.email);
-            
-            // Verify the session is still valid
-            const now = new Date().getTime();
-            const expiresAt = new Date(session.expires_at).getTime();
-            
-            if (now >= expiresAt) {
-                console.log('Session expired, attempting refresh...');
-                const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
-                
-                if (!refreshError && refreshData.session) {
-                    session = refreshData.session;
-                    await chrome.storage.local.set({
-                        'supabase.auth.token': session
-                    });
-                    updateUIForAuthState(true, session.user.email);
-                } else {
-                    console.log('Session refresh failed, showing sign-in UI');
-                    updateUIForAuthState(false);
-                }
-            }
-        } else {
-            console.log('No existing session found, showing sign-in UI');
-            updateUIForAuthState(false);
-        }
-    } catch (error) {
-        console.error('Error during popup initialization:', error);
-        updateUIForAuthState(false);
-    }
-    
     const saveArticleBtn = document.getElementById('saveArticleBtn');
     const showArticlesBtn = document.getElementById('showArticlesBtn');
-    const signInButton = document.getElementById('sign-in-button');
     const optionsLink = document.getElementById('optionsLink');
     
     console.log('Buttons found:', {
         saveArticleBtn: !!saveArticleBtn,
         showArticlesBtn: !!showArticlesBtn,
-        signInButton: !!signInButton,
         optionsLink: !!optionsLink
     });
+
+    // Load voice settings if they exist
+    await loadVoiceSettings();
 
     if (saveArticleBtn) {
         saveArticleBtn.addEventListener('click', async () => {
@@ -209,48 +112,79 @@ document.addEventListener('DOMContentLoaded', async () => {
                     showStatus("No active tab found", "error");
                     return;
                 }
-                console.log("Current tab:", tab.id);
+                console.log("Current tab:", tab.id, tab.url);
+                
+                // Check if we're on a valid page
+                const invalidSites = [
+                    'chrome://', 'chrome-extension://', 'about:', 'file:',
+                    'chrome.google.com', 'addons.mozilla.org'
+                ];
+                
+                if (invalidSites.some(site => tab.url.startsWith(site))) {
+                    showStatus(`Cannot extract from ${tab.url}. Please try with a regular web page.`, "error");
+                    return;
+                }
 
-                // 2. Ensure content script is injected
+                // Ensure content script is injected
+                showStatus("Preparing extraction...", "info");
+                
                 try {
                     await chrome.scripting.executeScript({
                         target: { tabId: tab.id },
                         files: ['contentScript.js']
                     });
-                    console.log("Content script injected");
+                    console.log("Content script injected successfully");
+                    
+                    // Give the content script a moment to initialize
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                    
+                    // Verify content script is responsive
+                    const isScriptResponsive = await verifyContentScript(tab.id);
+                    if (!isScriptResponsive) {
+                        console.warn("Content script not responding to ping test");
+                        // Continue anyway, extraction will try fallbacks
+                    }
                 } catch (err) {
-                    console.log("Content script already exists or injection failed:", err);
+                    console.error("Content script injection failed:", err);
+                    if (err.message.includes("Cannot access contents of the page")) {
+                        showStatus("Cannot access page content. Try with a regular web page.", "error");
+                        return;
+                    }
                 }
 
-                // 3. Extract article content
-                const articleData = await chrome.tabs.sendMessage(tab.id, { 
-                    action: "EXTRACT_ARTICLE" 
-                }).catch(err => {
-                    console.error("Failed to send message to content script:", err);
-                    throw new Error("Failed to extract article. Make sure you're on an article page.");
-                });
+                // Show status to user
+                showStatus("Extracting article content...", "info");
 
-                console.log("Extracted article data:", articleData);
-
-                if (!articleData || !articleData.text) {
-                    alert("No article text found. Make sure you're on an article page.");
+                // Extract article using our robust extraction function
+                let articleData;
+                try {
+                    articleData = await extractArticleWithFallbacks(tab.id);
+                } catch (extractError) {
+                    console.error("All extraction attempts failed:", extractError);
+                    showStatus("Failed to extract article. Please try a different page.", "error");
                     return;
                 }
 
-                // 4. Save the article
-                const session = await checkSession(); // Check if the user is authenticated
-                if (!session) {
-                    showStatus("You must be signed in to save an article.", "error");
-                    return; // Exit the function if not authenticated
+                console.log("Extracted article data:", {
+                    title: articleData?.title,
+                    textLength: articleData?.text?.length || 0
+                });
+
+                if (!articleData || !articleData.text || articleData.text.length < 100) {
+                    showStatus("No article text found or text too short. Try with a longer article.", "error");
+                    return;
                 }
 
+                // Add URL to the article data
+                articleData.url = tab.url;
+                
+                // Show status to user
+                showStatus("Saving article...", "info");
+
+                // Save the article
                 const response = await chrome.runtime.sendMessage({
                     action: "SAVE_ARTICLE",
-                    payload: {
-                        title: articleData.title,
-                        text: articleData.text,
-                        date: new Date().toISOString()
-                    }
+                    payload: articleData
                 });
 
                 console.log("Response from background script:", response);
@@ -259,7 +193,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     showStatus("Article saved successfully!", "success");
                 } else {
                     console.error("Error details:", response);
-                    showStatus("Failed to save the article.", "error");
+                    showStatus("Failed to save the article: " + (response?.error || "Unknown error"), "error");
                 }
             } catch (error) {
                 console.error("Error in save article flow:", error);
@@ -281,37 +215,54 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     if (optionsLink) {
-        optionsLink.addEventListener('click', (e) => {
-            console.log('Options link clicked');
-            e.preventDefault();
-            chrome.runtime.openOptionsPage();
+        optionsLink.addEventListener('click', () => {
+            if (chrome.runtime.openOptionsPage) {
+                chrome.runtime.openOptionsPage();
+            } else {
+                window.open(chrome.runtime.getURL('options.html'));
+            }
         });
     }
 });
 
-async function handleUserLogin(userData) {
+/**
+ * Load voice settings from storage
+ * This ensures the popup reflects the same voice settings used in the "Generate Podcast" popup
+ */
+async function loadVoiceSettings() {
     try {
-        // Notify background script of successful login
-        const { data: { session } } = await supabase.auth.getSession();
-        
-        const response = await chrome.runtime.sendMessage({
-            type: 'AUTH_STATE_CHANGED',
-            payload: {
-                event: 'SIGNED_IN',
-                session
-            }
-        });
-
-        if (!response?.success) {
-            console.error('Failed to update background script session state');
+        // Load host voice setting
+        const hostVoice = await getSetting('host_voice') || 'echo'; // Default to 'echo' if not set
+        const hostVoiceElement = document.getElementById('hostVoiceDisplay');
+        if (hostVoiceElement) {
+            // Map the voice ID to the display name that appears in the Generate Podcast popup
+            const voiceNameMap = {
+                'alloy': 'Esha',
+                'echo': 'Hari',
+                'fable': 'Mira',
+                'onyx': 'Tej',
+                'nova': 'Leela',
+                'shimmer': 'Veena'
+            };
+            hostVoiceElement.textContent = voiceNameMap[hostVoice] || hostVoice;
         }
-
-        console.log("User logged in. Supabase session active:", {
-            user: userData.email,
-            expires_at: session.expires_at
-        });
+        
+        // Load co-host voice setting
+        const cohostVoice = await getSetting('cohost_voice') || 'nova'; // Default to 'nova' if not set
+        const cohostVoiceElement = document.getElementById('cohostVoiceDisplay');
+        if (cohostVoiceElement) {
+            // Map the voice ID to the display name
+            const voiceNameMap = {
+                'alloy': 'Esha',
+                'echo': 'Hari',
+                'fable': 'Mira',
+                'onyx': 'Tej',
+                'nova': 'Leela',
+                'shimmer': 'Veena'
+            };
+            cohostVoiceElement.textContent = voiceNameMap[cohostVoice] || cohostVoice;
+        }
     } catch (error) {
-        console.error('Error handling user login:', error);
-        throw error;
+        console.error('Error loading voice settings:', error);
     }
 }

@@ -1,6 +1,0 @@
-{
-  "imports": {
-    "openai": "https://esm.sh/openai@4.28.0",
-    "@supabase/supabase-js": "https://esm.sh/@supabase/supabase-js@2.39.3"
-  }
-} 
