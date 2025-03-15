@@ -58,7 +58,8 @@ A Chrome extension that allows you to save web articles locally and convert them
 ## Requirements
 
 - Chrome browser (version 88 or later)
-- OpenAI API key with access to GPT and audio models
+- OpenAI API key with access to GPT and audio models 
+- This uses gpt-3.5-turbo and tts-1 model which consume much less credits compared to gpt4o.
 
 ## Privacy
 
