@@ -1,5 +1,21 @@
 # Article to Audio: Local Version
 
+## Installation
+
+### Chrome Web Store (Recommended)
+1. Visit the [Chrome Web Store page](https://chrome.google.com/webstore/detail/YOUR_EXTENSION_ID) for this extension
+2. Click "Add to Chrome" to install the extension
+3. The extension icon will appear in your browser toolbar
+
+![Article to Audio Extension Demo](demo.gif)
+
+### From Source Code
+1. Clone this repository or download the ZIP file
+2. Open Chrome and go to `chrome://extensions/`
+3. Enable "Developer mode" in the top right corner
+4. Click "Load unpacked" and select the extension folder
+5. The extension icon should now appear in your toolbar
+
 A Chrome extension that allows you to save web articles locally and convert them into audio podcasts without relying on any external storage or cloud services (except for OpenAI API for content generation).
 
 ## Features
@@ -10,15 +26,6 @@ A Chrome extension that allows you to save web articles locally and convert them
 - **Podcast Script Generation**: Convert articles into conversational podcast scripts with multiple voices
 - **Privacy-focused**: All your data stays in your browser - only article text is sent to OpenAI for processing
 - **Export/Import**: Export your article library to move between devices
-
-## Installation
-
-### From Source Code
-1. Clone this repository or download the ZIP file
-2. Open Chrome and go to `chrome://extensions/`
-3. Enable "Developer mode" in the top right corner
-4. Click "Load unpacked" and select the extension folder
-5. The extension icon should now appear in your toolbar
 
 ## How to Use
 
