@@ -1,29 +1,17 @@
 {
-    "name": "Article to Audio",
-    "description": "Extract and summarize articles, then generate audio files.",
+    "name": "Article to Audio: Local Version",
+    "description": "Extract articles, save them locally, and generate audio podcasts using OpenAI API.",
     "version": "1.0",
     "manifest_version": 3,
     "permissions": [
         "activeTab",
         "scripting",
         "storage",
-        "tabs",
-        "identity"
+        "tabs"
     ],
     "host_permissions": [
-        "https://api.openai.com/*",
-        "https://api-inference.huggingface.co/*",
-        "*://*.thehindu.com/*",
-        "https://vrsbermuilpkvjdnnhtf.supabase.co/*",
-        "https://accounts.google.com/*"
+        "https://api.openai.com/*"
     ],
-    "oauth2": {
-        "client_id": "1042881101572-s58kuc2slr99pojdop9quegkqi87nb0i.apps.googleusercontent.com",
-        "scopes": [
-            "https://www.googleapis.com/auth/userinfo.email",
-            "https://www.googleapis.com/auth/userinfo.profile"
-        ]
-    },
     "action": {
         "default_popup": "popup.html",
         "default_icon": {
@@ -40,7 +28,8 @@
         "128": "icons/icon128.png"
     },
     "background": {
-        "service_worker": "dist/background.bundle.js"
+        "service_worker": "background.js",
+        "type": "module"
     },
     "content_scripts": [
         {
@@ -48,7 +37,7 @@
                 "<all_urls>"
             ],
             "js": [
-                "dist/contentScript.bundle.js"
+                "contentScript.js"
             ],
             "all_frames": true,
             "match_about_blank": true,
@@ -58,7 +47,8 @@
     "web_accessible_resources": [
         {
             "resources": [
-                "articles.html"
+                "articles.html",
+                "test.html"
             ],
             "matches": [
                 "<all_urls>"

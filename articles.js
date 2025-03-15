@@ -1,1850 +1,1878 @@
-import supabase from './supabaseClient';
+/**
+ * Articles page functionality for Article to Audio Extension (Local Version)
+ * Handles displaying, searching, and selecting articles for podcast generation
+ */
 
-let currentSession = null;
+import {
+  getAllArticles,
+  getArticleById,
+  deleteArticle,
+  getAudioForArticle,
+  getSetting,
+  exportDatabase,
+  DB_NAME,
+  DB_VERSION,
+  saveSetting
+} from './db.js';
 
-// Initialize the page
-document.addEventListener('DOMContentLoaded', async () => {
-    console.log('DOM Content Loaded');
-    const container = document.getElementById('articles-container');
+import {
+  generatePodcast,
+  formatDuration,
+  estimateAudioDuration
+} from './podcastGenerator.js';
 
-    // Initialize session first
-    await initializeSession();
-    
-    if (currentSession) {
-        await loadArticles();
-    } else {
-        console.log('No active session found, cannot load articles.');
-        container.innerHTML = '<div class="no-articles">Please sign in to view your articles.</div>';
-    }
-
-    // Set up date filtering
-    setupDateFiltering();
-
-    // Add Generate Podcast button handler
-    const generatePodcastBtn = document.getElementById('generatePodcast');
-    console.log('Generate Podcast button:', generatePodcastBtn);
-    
-    // Add event listener for the All Podcasts button
-    document.getElementById('allPodcasts').addEventListener('click', async () => {
-        const podcastTable = document.getElementById('podcast-table');
-        const podcastList = document.getElementById('podcast-list');
-
-        // Toggle visibility of the podcast table
-        if (podcastTable.style.display === 'none') {
-            podcastTable.style.display = 'block';
-            await loadPodcasts(podcastList); // Load podcasts when opening the table
-        } else {
-            podcastTable.style.display = 'none';
-        }
-    });
-
-    // Add CSS for the delete button and deleting state
-    const style = document.createElement('style');
-    style.textContent = `
-        .delete-podcast-btn {
-            background-color: #ff4d4d;
-            color: white;
-            border: none;
-            border-radius: 4px;
-            padding: 5px 10px;
-            cursor: pointer;
-            font-size: 14px;
-            transition: background-color 0.3s;
-        }
-        
-        .delete-podcast-btn:hover {
-            background-color: #ff0000;
-        }
-        
-        tr.deleting {
-            opacity: 0.5;
-            background-color: #ffeeee;
-            transition: all 0.3s;
-        }
-        
-        .podcast-table th, .podcast-table td {
-            padding: 10px;
-            border-bottom: 1px solid #ddd;
-        }
-    `;
-    document.head.appendChild(style);
-});
-
-// Session management
-async function initializeSession() {
-    console.log('Articles page: Initializing session...');
-    
-    try {
-        // First try to get session from background
-        const response = await chrome.runtime.sendMessage({ action: "GET_SESSION" });
-        if (response?.session) {
-            console.log('Articles page: Got session from background:', response.session);
-            currentSession = response.session;
-            return;
-        }
-        
-        // If no session in background, check Supabase directly
-        const { data: { session }, error } = await supabase.auth.getSession();
-        
-        if (error) {
-            console.error('Articles page: Error getting session:', error.message);
-            throw error;
-        }
-        
-        if (session) {
-            console.log('Articles page: Session found:', {
-                user: session.user.email,
-                expires_at: new Date(session.expires_at).toLocaleString()
-            });
-            currentSession = session;
-        } else {
-            console.log('Articles page: No session found');
-            currentSession = null;
-            // Redirect to popup for authentication
-            window.close();
-        }
-    } catch (error) {
-        console.error('Articles page: Error in initializeSession:', error);
-        console.error('Error stack:', error.stack);
-        window.close();
-    }
-}
-
-// Listen for auth state changes from background
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.type === 'AUTH_STATE_CHANGED') {
-        console.log('Articles page: Auth state changed:', message.payload.event);
-        currentSession = message.payload.session;
-        
-        if (!currentSession) {
-            console.log('Articles page: No session, closing window');
-            window.close();
-        } else {
-            console.log('Articles page: New session, refreshing content');
-            loadArticles();
-        }
-    }
-});
-
-// Enhanced article loading with authentication
-async function loadArticles() {
-    console.log('Articles page: Loading articles...');
-    
-    if (!currentSession) {
-        console.error('Articles page: Attempting to load articles without authentication');
-        const container = document.getElementById('articles-container');
-        container.innerHTML = '<div class="no-articles">Please sign in to view your articles.</div>';
-        return;
-    }
-    
-    try {
-        console.log('Articles page: Current session user:', currentSession.user.id);
-        
-        const { data: articles, error } = await supabase
-            .from('articles')
-            .select('*')
-            .eq('user_id', currentSession.user.id)
-            .order('created_at', { ascending: false });
-            
-        if (error) {
-            console.error('Articles page: Error loading articles:', error.message);
-            console.error('Full error:', error);
-            const container = document.getElementById('articles-container');
-            container.innerHTML = '<div class="no-articles">Error loading articles. Please try again.</div>';
-            return;
-        }
-        
-        if (!articles || articles.length === 0) {
-            console.log('Articles page: No articles found for user');
-            const container = document.getElementById('articles-container');
-            container.innerHTML = '<div class="no-articles">No saved articles yet.</div>';
-            return;
-        }
-        
-        console.log(`Articles page: Loaded ${articles.length} articles:`, articles);
-        
-        // Map database fields to display fields
-        const mappedArticles = articles.map(article => ({
-            id: article.id,
-            title: article.title,
-            content: article.content || article.text, // Handle both content and text fields
-            created_at: article.created_at,
-            summary: article.summary
-        }));
-        
-        // Store articles in a global variable for date filtering
-        window.articlesData = mappedArticles;
-        
-        displayArticles(mappedArticles);
-        
-        // Set up date filtering after articles are loaded
-        setupDateFiltering();
-    } catch (error) {
-        console.error('Articles page: Error in loadArticles:', error);
-        console.error('Error stack:', error.stack);
-        const container = document.getElementById('articles-container');
-        container.innerHTML = '<div class="no-articles">Error loading articles. Please try again.</div>';
-    }
-}
-
-// Setup date filtering functionality
-function setupDateFiltering() {
-    const startDateInput = document.getElementById('startDate');
-    const endDateInput = document.getElementById('endDate');
-    
-    if (!startDateInput || !endDateInput) {
-        console.error('Date filter inputs not found in the DOM');
-        return;
-    }
-    
-    // Function to filter articles by date
-    const filterArticlesByDate = () => {
-        console.log('Filtering articles by date');
-        
-        if (!window.articlesData) {
-            console.error('No articles data available for filtering');
-            return;
-        }
-        
-        const startDate = startDateInput.value ? new Date(startDateInput.value) : null;
-        const endDate = endDateInput.value ? new Date(endDateInput.value) : null;
-        
-        // If both inputs are empty, show all articles
-        if (!startDate && !endDate) {
-            document.querySelectorAll('.article').forEach(article => {
-                article.style.display = '';
-            });
-            return;
-        }
-        
-        // Add one day to end date to include the selected day
-        if (endDate) {
-            endDate.setDate(endDate.getDate() + 1);
-        }
-        
-        document.querySelectorAll('.article').forEach((article, index) => {
-            if (index >= window.articlesData.length) return;
-            
-            const articleDate = new Date(window.articlesData[index].created_at);
-            let showArticle = true;
-            
-            if (startDate && articleDate < startDate) {
-                showArticle = false;
-            }
-            
-            if (endDate && articleDate > endDate) {
-                showArticle = false;
-            }
-            
-            article.style.display = showArticle ? '' : 'none';
-        });
-        
-        // Update Select All checkbox to only consider visible articles
-        updateSelectAllCheckbox();
-    };
-    
-    // Attach event listeners to filter articles when dates change
-    startDateInput.addEventListener('change', filterArticlesByDate);
-    endDateInput.addEventListener('change', filterArticlesByDate);
-}
-
-// Function to update the Select All checkbox state based on visible articles
-function updateSelectAllCheckbox() {
-    const selectAllCheckbox = document.getElementById('selectAllCheckbox');
-    if (!selectAllCheckbox) return;
-    
-    const visibleArticles = Array.from(document.querySelectorAll('.article'))
-        .filter(article => article.style.display !== 'none');
-    
-    const visibleCheckboxes = visibleArticles
-        .map(article => article.querySelector('.article-checkbox'))
-        .filter(checkbox => checkbox !== null);
-    
-    // If all visible checkboxes are checked, check the Select All checkbox
-    selectAllCheckbox.checked = visibleCheckboxes.length > 0 && 
-        visibleCheckboxes.every(checkbox => checkbox.checked);
-}
-
+// Global variables
 let allArticles = [];
+let filteredArticles = [];
 let selectedArticles = new Set();
+let currentPage = 1;
+let articlesPerPage = 12;
+let currentPodcastId = null;
+let currentPodcastScriptData = null;
+let allPodcasts = [];
+let selectedPodcasts = new Set();
 
-document.addEventListener("DOMContentLoaded", async () => {
-    const container = document.getElementById('articles-container');
+// Store expanded article IDs for persistence
+const expandedArticles = new Set();
 
-    // Get saved articles
-    const storage = await chrome.storage.local.get(['articles']);
+// Initialize when the DOM is ready
+document.addEventListener('DOMContentLoaded', initializeUI);
 
-    if (!storage.articles || storage.articles.length === 0) {
-        container.innerHTML = '<div class="no-articles">No saved articles yet.</div>';
-        return;
+/**
+ * Initialize the UI
+ */
+function initializeUI() {
+  // Load articles
+  loadArticles().then(() => {
+    // Initial display
+    displayArticles(allArticles);
+    
+    // Initialize event listeners
+    initializeEventListeners();
+    
+    // Load podcasts tab
+    loadPodcasts();
+    
+    // Check for API key
+    initializeVoiceSettings();
+    
+    // Set the initial view to articles
+    switchView('articles');
+  });
+}
+
+/**
+ * Initialize voice settings from saved preferences
+ */
+async function initializeVoiceSettings() {
+  const hostVoiceSelect = document.getElementById('hostVoiceSelect');
+  const cohostVoiceSelect = document.getElementById('cohostVoiceSelect');
+
+  const hostVoice = await getSetting('host_voice');
+  if (hostVoice) {
+    hostVoiceSelect.value = hostVoice;
+  }
+
+  const cohostVoice = await getSetting('cohost_voice');
+  if (cohostVoice) {
+    cohostVoiceSelect.value = cohostVoice;
+  }
+}
+
+/**
+ * Load all articles from IndexedDB
+ */
+async function loadArticles() {
+  try {
+    // Get all articles from IndexedDB
+    allArticles = await getAllArticles();
+    
+    // Sort by date (newest first)
+    allArticles.sort((a, b) => new Date(b.dateAdded) - new Date(a.dateAdded));
+    
+    // Reset filtered articles
+    filteredArticles = [...allArticles];
+    
+    // Display articles
+    displayArticles(filteredArticles);
+    
+    // Reset selection
+    selectedArticles.clear();
+    updateButtonsState();
+    
+    // Check for OpenAI API key
+    const apiKey = await getSetting('openai_api_key');
+    if (!apiKey) {
+      showStatus(
+        'OpenAI API key not set. Please go to settings and add your API key to generate podcasts.',
+        'warning'
+      );
     }
+  } catch (error) {
+    console.error('Error loading articles:', error);
+    showStatus(`Error loading articles: ${error.message}`, 'error');
+  }
+}
 
-    // Add Select All checkbox
-    const selectAllContainer = document.createElement('div');
-    selectAllContainer.className = 'select-all-container';
-    selectAllContainer.innerHTML = `
-        <label class="checkbox-container">
-            <input type="checkbox" id="selectAllCheckbox">
-            <span class="checkbox-label">Select All Articles</span>
-        </label>
-    `;
-    container.appendChild(selectAllContainer);
+/**
+ * Filter articles by date range
+ * @param {Date} startDate - Start date for filtering (inclusive)
+ * @param {Date} endDate - End date for filtering (inclusive)
+ */
+function filterArticlesByDate(startDate, endDate) {
+  // If no dates are provided, reset to all articles
+  if (!startDate && !endDate) {
+    filteredArticles = [...allArticles];
+    currentPage = 1;
+    displayArticles(filteredArticles);
+    return;
+  }
+  
+  // Set default dates if not provided
+  if (!startDate) {
+    startDate = new Date(0); // Beginning of time
+  }
+  
+  if (!endDate) {
+    endDate = new Date(); // Current date
+  }
+  
+  // Set time to end of day for the end date to include the entire day
+  endDate = new Date(endDate);
+  endDate.setHours(23, 59, 59, 999);
+  
+  // Filter articles
+  filteredArticles = allArticles.filter(article => {
+    const articleDate = new Date(article.dateAdded);
+    return articleDate >= startDate && articleDate <= endDate;
+  });
+  
+  // Reset pagination
+  currentPage = 1;
+  
+  // Display filtered articles
+  displayArticles(filteredArticles);
+  
+  // Show status
+  const count = filteredArticles.length;
+  showStatus(`Showing ${count} article${count !== 1 ? 's' : ''} in the selected date range`, 'info');
+}
 
-    // Add handler for Select All
-    const selectAllCheckbox = document.getElementById('selectAllCheckbox');
-    selectAllCheckbox.addEventListener('change', () => {
-        const checkboxes = document.querySelectorAll('.select-article');
-        const articles = document.querySelectorAll('.article');
-        const startDate = new Date(startDateInput.value);
-        const endDate = new Date(endDateInput.value);
+/**
+ * Apply date filter from form inputs
+ */
+function applyDateFilter() {
+  const startDateInput = document.getElementById('startDateFilter');
+  const endDateInput = document.getElementById('endDateFilter');
+  
+  let startDate = startDateInput.value ? new Date(startDateInput.value) : null;
+  let endDate = endDateInput.value ? new Date(endDateInput.value) : null;
+  
+  filterArticlesByDate(startDate, endDate);
+}
 
-        checkboxes.forEach((checkbox, index) => {
-            const articleDate = new Date(storage.articles[index].created_at); // Access the date from storage
+/**
+ * Reset date filter
+ */
+function resetDateFilter() {
+  const startDateInput = document.getElementById('startDateFilter');
+  const endDateInput = document.getElementById('endDateFilter');
+  
+  startDateInput.value = '';
+  endDateInput.value = '';
+  
+  filterArticlesByDate(null, null);
+}
 
-            // Check if the article date is within the selected range
-            if (articleDate >= startDate && articleDate <= endDate) {
-                checkbox.checked = selectAllCheckbox.checked; // Check or uncheck based on Select All
-                const articleId = parseInt(checkbox.dataset.articleId);
-                if (selectAllCheckbox.checked) {
-                    selectedArticles.add(articleId);
-                } else {
-                    selectedArticles.delete(articleId);
-                }
-            } else {
-                checkbox.checked = false; // Uncheck if not in date range
-            }
-        });
-    });
+/**
+ * Apply quick date filter
+ * @param {string} period - Time period to filter by ('today', 'week', 'month', 'year')
+ */
+function applyQuickDateFilter(period) {
+  const now = new Date();
+  let startDate;
+  
+  switch (period) {
+    case 'today':
+      startDate = new Date(now);
+      startDate.setHours(0, 0, 0, 0);
+      break;
+    case 'week':
+      startDate = new Date(now);
+      startDate.setDate(now.getDate() - 7);
+      break;
+    case 'month':
+      startDate = new Date(now);
+      startDate.setMonth(now.getMonth() - 1);
+      break;
+    case 'year':
+      startDate = new Date(now);
+      startDate.setFullYear(now.getFullYear() - 1);
+      break;
+    default:
+      startDate = null;
+      break;
+  }
+  
+  // Update the date inputs to match the selection
+  const startDateInput = document.getElementById('startDateFilter');
+  const endDateInput = document.getElementById('endDateFilter');
+  
+  if (startDate) {
+    startDateInput.value = startDate.toISOString().split('T')[0];
+  } else {
+    startDateInput.value = '';
+  }
+  
+  endDateInput.value = now.toISOString().split('T')[0];
+  
+  filterArticlesByDate(startDate, now);
+}
 
-    // Sort articles by date (newest first)
-    storage.articles.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-
-    // Display each article
-    for (let [index, article] of storage.articles.entries()) {
-        const articleElement = document.createElement('div');
-        articleElement.className = 'article';
-
-        const date = new Date(article.created_at).toLocaleDateString('en-US', {
-            year: 'numeric',
-            month: 'long',
-            day: 'numeric',
-            hour: '2-digit',
-            minute: '2-digit'
-        });
-
-        // Create main article content
-        const mainContent = document.createElement('div');
-        mainContent.className = 'article-main';
-
-        // Check if the article already has a title
-        const existingTitle = article.title?.trim();
-        let articleTitle = existingTitle || 'Untitled Article';
-
-        // Generate title using OpenAI only if it doesn't exist
-        if (!existingTitle) {
-            try {
-                const generatedTitle = await generateTitle(article.text);
-                articleTitle = generatedTitle || 'Untitled Article';
-            } catch (error) {
-                console.error('Error generating title:', error);
-            }
-        }
-
-        mainContent.innerHTML = `
-            <h2 class="article-title">${articleTitle}</h2>
-            <div class="article-date">Saved on ${date}</div>
-            <div class="article-content" id="content-${index}">
-                ${article.text}
-            </div>
-            <button class="expand-btn" data-index="${index}">Show More</button>
-            <button class="generate-summary-btn" data-index="${index}">${article.summary ? 'Re-generate Summary' : 'Generate Summary'}</button>
-            <div class="article-summary" id="summary-${index}"></div>
-        `;
-
-        // Add click handler for the Generate/Re-generate Summary button
-        const generateSummaryBtn = mainContent.querySelector('.generate-summary-btn');
-        console.log('Adding click handler to summary button:', generateSummaryBtn);
-        generateSummaryBtn.addEventListener('click', async () => {
-            console.log('Summary button clicked!');
-            try {
-                if (!currentSession) {
-                    console.error('No active session found');
-                    throw new Error('Please sign in to generate summaries');
-                }
-
-                console.log('Starting summary generation for article:', {
-                    title: articleTitle,
-                    textLength: article.content?.length || article.text?.length || 0,
-                    hasContent: !!article.content,
-                    hasText: !!article.text,
-                    articleData: article
-                });
-
-                if (!article.content && !article.text) {
-                    throw new Error('No article text found to generate summary');
-                }
-
-                // Show loading state
-                generateSummaryBtn.disabled = true;
-                generateSummaryBtn.textContent = 'Generating...';
-                
-                const summary = await generateSummary(article.content || article.text);
-                console.log('Summary generated successfully:', {
-                    summaryLength: summary.length,
-                    summary: summary.substring(0, 100) + '...' // Log first 100 chars
-                });
-
-                const summaryElement = mainContent.querySelector(`.article-summary#summary-${index}`);
-                summaryElement.style.display = 'block';
-                summaryElement.innerHTML = `<strong>Summary:</strong> ${summary}`;
-                
-                // Update the summary in storage
-                article.summary = summary;
-                
-                // Update in Supabase if we have an article ID
-                if (article.id) {
-                    console.log('Saving summary to database for article:', article.id);
-                    const { error } = await supabase
-                        .from('articles')
-                        .update({ summary })
-                        .eq('id', article.id);
-                        
-                    if (error) {
-                        console.error('Error saving summary to database:', error);
-                        throw error;
-                    }
-                    console.log('Summary saved to database successfully');
-                }
-
-                // Update button text to show success
-                generateSummaryBtn.textContent = 'Re-generate Summary';
-            } catch (error) {
-                console.error('Error in summary generation:', error);
-                alert('Failed to generate summary: ' + error.message);
-                generateSummaryBtn.textContent = 'Generate Summary';
-            } finally {
-                generateSummaryBtn.disabled = false;
-            }
-        });
-
-        // Add click handler directly to the button
-        const expandBtn = mainContent.querySelector('.expand-btn');
-        expandBtn.addEventListener('click', function () {
-            const contentId = this.getAttribute('data-index');
-            const content = document.getElementById(`content-${contentId}`);
-
-            if (content.classList.contains('expanded')) {
-                content.classList.remove('expanded');
-                this.textContent = 'Show More';
-                content.scrollTop = 0;
-            } else {
-                content.classList.add('expanded');
-                this.textContent = 'Show Less';
-            }
-        });
-
-        // Create controls section
-        const controls = document.createElement('div');
-        controls.className = 'article-controls';
-
-        // Replace button with checkbox
-        const checkboxContainer = document.createElement('label');
-        checkboxContainer.className = 'checkbox-container';
-        checkboxContainer.innerHTML = `
-            <input type="checkbox" class="select-article article-checkbox" data-article-id="${index}">
-            <span class="checkbox-label">Select for Podcast</span>
-        `;
-
-        const checkbox = checkboxContainer.querySelector('input');
-        checkbox.addEventListener('change', () => toggleArticleSelection(index, checkbox));
-
-        controls.appendChild(checkboxContainer);
-
-        // Add audio player container (initially empty)
-        const audioContainer = document.createElement('div');
-        audioContainer.id = `audio-container-${index}`;
-        controls.appendChild(audioContainer);
-
-        // Create delete button (new bin icon)
-        const deleteBtn = document.createElement('button');
-        deleteBtn.className = 'delete-btn';
-        deleteBtn.innerHTML = '🗑️'; // Replace this with a different icon if needed
-        deleteBtn.addEventListener('click', () => {
-            // Remove article from storage and UI
-            storage.articles.splice(index, 1); // Remove from array
-            chrome.storage.local.set({ articles: storage.articles }); // Update storage
-            container.removeChild(articleElement); // Remove from UI
-        });
-
-        // Append delete button to the article element
-        controls.appendChild(deleteBtn);
-
-        // Create summary element
-        const summaryElement = document.createElement('div');
-        summaryElement.className = 'article-summary';
-        summaryElement.id = `summary-${index}`;
-        summaryElement.innerHTML = `<strong>Summary:</strong> ${article.summary || 'No summary available.'}`; // Populate summary
-        summaryElement.style.display = 'none'; // Initially hide the summary
-        mainContent.appendChild(summaryElement); // Append summary to main content
-
-        // Create Show/Hide Summary button if a summary exists
-        if (article.summary) {
-            const showHideSummaryBtn = document.createElement('button');
-            showHideSummaryBtn.className = 'show-hide-summary-btn';
-            showHideSummaryBtn.textContent = 'Show Summary'; // Initial button text
-            mainContent.appendChild(showHideSummaryBtn);
-
-            // Add click handler for the Show/Hide Summary button
-            showHideSummaryBtn.addEventListener('click', () => {
-                console.log('Button clicked'); // Debugging line
-                if (summaryElement.style.display === 'none') {
-                    summaryElement.style.display = 'block'; // Show the summary
-                    showHideSummaryBtn.textContent = 'Hide Summary'; // Update button text
-                } else {
-                    summaryElement.style.display = 'none'; // Hide the summary
-                    showHideSummaryBtn.textContent = 'Show Summary'; // Update button text
-                }
-            });
-        }
-
-        articleElement.appendChild(mainContent);
-        articleElement.appendChild(controls);
-        container.appendChild(articleElement);
+/**
+ * Display articles with pagination
+ * @param {Array} articles - Articles to display
+ */
+function displayArticles(articles) {
+  const container = document.getElementById('articles-container');
+  
+  // Clear container
+  container.innerHTML = '';
+  
+  if (articles.length === 0) {
+    container.innerHTML = '<div class="no-articles">No articles found. Save some articles first!</div>';
+    return;
+  }
+  
+  // Calculate pagination
+  const totalPages = Math.ceil(articles.length / articlesPerPage);
+  if (currentPage > totalPages) {
+    currentPage = 1;
+  }
+  
+  // Get current page articles
+  const startIndex = (currentPage - 1) * articlesPerPage;
+  const endIndex = Math.min(startIndex + articlesPerPage, articles.length);
+  const currentArticles = articles.slice(startIndex, endIndex);
+  
+  // Render articles
+  currentArticles.forEach(article => {
+    const card = createArticleCard(article);
+    container.appendChild(card);
+    
+    // Restore expanded state if needed
+    if (expandedArticles.has(article.id)) {
+      const fullContent = card.querySelector('.card-full-content');
+      const toggleIcon = card.querySelector('.toggle-icon');
+      const toggleText = card.querySelector('.toggle-text');
+      
+      fullContent.style.display = 'block';
+      toggleIcon.textContent = '▲';
+      toggleText.textContent = 'Hide Full Article';
     }
+  });
+  
+  // Update pagination
+  updatePagination(totalPages);
+}
 
-    // Add event listener for the All Podcasts button
-    document.getElementById('allPodcasts').addEventListener('click', async () => {
-        const podcastTable = document.getElementById('podcast-table');
-        const podcastList = document.getElementById('podcast-list');
-
-        // Toggle visibility of the podcast table
-        if (podcastTable.style.display === 'none') {
-            podcastTable.style.display = 'block';
-            await loadPodcasts(podcastList); // Load podcasts when opening the table
-        } else {
-            podcastTable.style.display = 'none';
-        }
-    });
-});
-
-function toggleArticleSelection(articleId, checkbox) {
-    if (checkbox.checked) {
-        selectedArticles.add(articleId);
+/**
+ * Create an article card element
+ * @param {Object} article - Article data
+ * @returns {HTMLElement} Article card element
+ */
+function createArticleCard(article) {
+  const card = document.createElement('div');
+  card.className = 'article-card';
+  card.dataset.id = article.id;
+  
+  // Format date
+  const date = new Date(article.dateAdded);
+  const formattedDate = date.toLocaleDateString(undefined, { 
+    year: 'numeric', 
+    month: 'short', 
+    day: 'numeric' 
+  });
+  
+  // Prepare the summary text (truncated)
+  const summaryText = article.summary || article.content.slice(0, 150) + '...';
+  
+  // Calculate word count and reading time
+  const wordCount = article.content.split(/\s+/).length;
+  const readingTimeMinutes = Math.ceil(wordCount / 200); // Assuming 200 words per minute
+  
+  // Create card content
+  card.innerHTML = `
+    <div class="card-header">
+      <label class="checkbox-container">
+        <input type="checkbox" class="article-checkbox" data-id="${article.id}" ${selectedArticles.has(article.id) ? 'checked' : ''}>
+        <span class="checkmark"></span>
+      </label>
+      <h3 class="card-title">${article.title || 'Untitled Article'}</h3>
+    </div>
+    <div class="card-body">
+      <div class="card-content">
+        <p class="card-summary">${summaryText}</p>
+        <div class="card-full-content" style="display: none; margin-top: 15px; padding-top: 15px; border-top: 1px solid var(--border-color);">
+          <div class="article-stats" style="margin-bottom: 10px; font-size: 12px; color: var(--text-light);">
+            <span>${wordCount.toLocaleString()} words</span> • 
+            <span>~${readingTimeMinutes} min read</span>
+          </div>
+          <div class="full-text" style="max-height: 300px; overflow-y: auto;">${article.content}</div>
+        </div>
+      </div>
+      <button class="toggle-content-btn" aria-label="Toggle full content">
+        <span class="toggle-icon">▼</span>
+        <span class="toggle-text">Show Full Article</span>
+      </button>
+    </div>
+    <div class="card-footer">
+      <div class="meta-info">
+        <div>${formattedDate}</div>
+        <div>${article.url ? new URL(article.url).hostname : 'No URL'}</div>
+      </div>
+      <div class="card-actions">
+        <button class="view-btn" title="View Article" data-id="${article.id}">👁️</button>
+        <button class="delete-btn" title="Delete Article" data-id="${article.id}">🗑️</button>
+      </div>
+    </div>
+  `;
+  
+  // Add event listeners
+  const checkbox = card.querySelector('.article-checkbox');
+  checkbox.addEventListener('change', (e) => {
+    toggleArticleSelection(article.id, e.target.checked);
+  });
+  
+  const viewBtn = card.querySelector('.view-btn');
+  viewBtn.addEventListener('click', () => {
+    if (article.url) {
+      window.open(article.url, '_blank');
     } else {
-        selectedArticles.delete(articleId);
+      showStatus('No URL available for this article', 'warning');
     }
-
-    // Update Select All checkbox state
-    updateSelectAllCheckbox();
-}
-
-// Utility function to delay execution
-function delay(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-// Retry logic for API calls
-async function retryAsync(fn, retries) {
-    for (let i = 0; i < retries; i++) {
-        try {
-            return await fn();
-        } catch (error) {
-            console.error(`Attempt ${i + 1} failed: ${error.message}`);
-            if (i < retries - 1) {
-                await delay(1000); // Wait before retrying
-            } else {
-                throw new Error('Max retries reached. Please try again later.');
-            }
-        }
+  });
+  
+  const deleteBtn = card.querySelector('.delete-btn');
+  deleteBtn.addEventListener('click', () => {
+    if (confirm(`Are you sure you want to delete "${article.title || 'this article'}"?`)) {
+      deleteArticleById(article.id);
     }
-}
-
-async function generateSummary(text) {
-    try {
-        const { data, error } = await supabase.functions.invoke('generate-summary', {
-            body: { text }
-        });
-
-        if (error) {
-            throw error;
-        }
-
-        return data.summary;
-    } catch (error) {
-        console.error('Error generating summary:', error);
-        throw error;
-    }
-}
-
-async function generateAudio(text, voice = "alloy") {
-    try {
-        const { data, error } = await supabase.functions.invoke('generate-audio', {
-            body: { text, voice }
-        });
-
-        if (error) {
-            throw error;
-        }
-
-        // Convert base64 to blob
-        const audioBlob = await fetch(`data:audio/mp3;base64,${data.audio}`).then(res => res.blob());
-        console.log("✅ Audio generated successfully!");
-        return audioBlob;
-    } catch (error) {
-        console.error('Error generating audio:', error);
-        throw error;
-    }
-}
-
-async function generateTitle(text) {
-    try {
-        const { data, error } = await supabase.functions.invoke('generate-title', {
-            body: { text }
-        });
-
-        if (error) {
-            throw error;
-        }
-
-        return data.title;
-    } catch (error) {
-        console.error('Error generating title:', error);
-        throw error;
-    }
-}
-
-async function generateConversationScript(articles) {
-    try {
-        const { data, error } = await supabase.functions.invoke('generate-conversation', {
-            body: { articles }
-        });
-
-        if (error) {
-            throw error;
-        }
-
-        return parseConversationScript(data.conversation);
-    } catch (error) {
-        console.error('Error generating conversation script:', error);
-        throw error;
-    }
-}
-
-async function generateSpeechAudio(textLines, voice) {
-    console.log(`Generating audio for ${textLines.length} lines with voice '${voice}'`);
-
-    // Generate audio for each line separately using generateAudio
-    const audioPromises = textLines.map(async (line) => {
-        return await generateAudio(line, voice); // Call generateAudio for each line
-    });
-
-    // Wait for all audio generations to complete
-    const audioBlobs = await Promise.all(audioPromises);
-    console.log(`Generated ${audioBlobs.length} audio segments`);
-    return audioBlobs; // Return the array of audio blobs
-}
-
-async function combineAudioTracks(audioBlobs1, audioBlobs2, conversation) {
-    if (typeof window === 'undefined') {
-        throw new Error('Audio context is not available in this environment');
-    }
-
-    try {
-        console.log('🎙️ Starting podcast audio combination...');
-        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-
-        // Convert all blobs to audio buffers
-        console.log('🔄 Converting blobs to audio buffers...');
-        const convertBlobToBuffer = async (blob) => {
-            const arrayBuffer = await blob.arrayBuffer();
-            return await audioContext.decodeAudioData(arrayBuffer);
-        };
-
-        const speaker1Buffers = await Promise.all(audioBlobs1.map(convertBlobToBuffer));
-        const speaker2Buffers = await Promise.all(audioBlobs2.map(convertBlobToBuffer));
-
-        // Calculate total duration
-        const getTotalDuration = (buffers) => buffers.reduce((sum, buf) => sum + buf.duration, 0);
-        const pauseDuration = 0.3;
-        const totalDuration = getTotalDuration(speaker1Buffers) + 
-                            getTotalDuration(speaker2Buffers) + 
-                            (pauseDuration * 2 * Math.max(speaker1Buffers.length, speaker2Buffers.length));
-
-        console.log('📊 Buffer details:', {
-            speaker1Lines: speaker1Buffers.length,
-            speaker2Lines: speaker2Buffers.length,
-            totalDuration,
-            sampleRate: audioContext.sampleRate
-        });
-
-        // Create final buffer
-        const finalBuffer = audioContext.createBuffer(
-            1,
-            Math.ceil(audioContext.sampleRate * totalDuration),
-            audioContext.sampleRate
-        );
-        const targetData = finalBuffer.getChannelData(0);
-
-        // Helper to copy a buffer at a specific position
-        const copyBuffer = (sourceBuffer, targetPosition) => {
-            const sourceData = sourceBuffer.getChannelData(0);
-            const offsetSamples = Math.floor(targetPosition * audioContext.sampleRate);
-            targetData.set(sourceData, offsetSamples);
-            return sourceBuffer.duration;
-        };
-
-        // Helper to add silence
-        const addPause = (duration, targetPosition) => {
-            const offsetSamples = Math.floor(targetPosition * audioContext.sampleRate);
-            const pauseSamples = Math.floor(duration * audioContext.sampleRate);
-            targetData.fill(0, offsetSamples, offsetSamples + pauseSamples);
-            return duration;
-        };
-
-        // Interleave the audio segments
-        let currentPosition = 0;
-        const lineCount = Math.max(speaker1Buffers.length, speaker2Buffers.length);
-
-        for (let i = 0; i < lineCount; i++) {
-            console.log(`🔄 Processing dialogue line ${i + 1} of ${lineCount}`);
-
-            if (speaker1Buffers[i]) {
-                currentPosition += copyBuffer(speaker1Buffers[i], currentPosition);
-                currentPosition += addPause(pauseDuration, currentPosition);
-            }
-
-            if (speaker2Buffers[i]) {
-                currentPosition += copyBuffer(speaker2Buffers[i], currentPosition);
-                currentPosition += addPause(pauseDuration, currentPosition);
-            }
-        }
-
-        // Create and return the final audio
-        console.log('🎤 Creating final media stream...');
-        const source = audioContext.createBufferSource();
-        source.buffer = finalBuffer;
-        const destination = audioContext.createMediaStreamDestination();
-        source.connect(destination);
-
-        const mediaRecorder = new MediaRecorder(destination.stream);
-        const chunks = [];
-
-        return new Promise((resolve) => {
-            mediaRecorder.ondataavailable = (e) => chunks.push(e.data);
-            mediaRecorder.onstop = () => {
-                const finalBlob = new Blob(chunks, { type: 'audio/wav' });
-                console.log('🎙️ Final podcast size:', finalBlob.size, 'bytes');
-                resolve(finalBlob);
-            };
-
-            source.start(0);
-            mediaRecorder.start();
-
-            setTimeout(() => {
-                mediaRecorder.stop();
-                source.stop();
-            }, finalBuffer.duration * 1000);
-        });
-
-    } catch (error) {
-        console.error('❌ Error combining audio tracks:', error);
-        throw new Error('Failed to combine audio tracks: ' + error.message);
-    }
-}
-
-async function playPodcast(audioBlob) {
-    if (!(audioBlob instanceof Blob)) {
-        console.error('Invalid audio blob:', audioBlob);
-        alert('Failed to play podcast. Invalid audio data.');
-        return;
-    }
-
-    const audio = new Audio(URL.createObjectURL(audioBlob));
-    audio.play();
-}
-
-// Function to parse the conversation script
-function parseConversationScript(script) {
-    // Split by line breaks and remove empty lines
-    const lines = script.split('\n')
-        .filter(line => line.trim() !== '')
-        .map(line => line.trim());
+  });
+  
+  // Add toggle functionality for full content
+  const toggleBtn = card.querySelector('.toggle-content-btn');
+  const fullContent = card.querySelector('.card-full-content');
+  const toggleIcon = card.querySelector('.toggle-icon');
+  const toggleText = card.querySelector('.toggle-text');
+  
+  toggleBtn.addEventListener('click', () => {
+    const isExpanded = fullContent.style.display !== 'none';
+    const articleId = article.id;
     
-    const speaker1Lines = [];
-    const speaker2Lines = [];
-    
-    // Parse each line and distribute to appropriate speaker
-    lines.forEach(line => {
-        // Remove the host marker from the actual text
-        const cleanedLine = line.replace(/^(Host ?[12]:?\s*)/i, '').trim();
-        
-        if (line.match(/^Host ?1:?/i)) {
-            speaker1Lines.push(cleanedLine);
-        } else if (line.match(/^Host ?2:?/i)) {
-            speaker2Lines.push(cleanedLine);
-        }
-    });
-
-    return {
-        speaker1Lines,
-        speaker2Lines
-    };
-}
-
-// Function to save audio file in IndexedDB
-async function saveAudioFile(id, audioBlob) {
-    const db = await openDb();
-    const tx = db.transaction("audioFiles", "readwrite");
-    const store = tx.objectStore("audioFiles");
-
-    // Log the audioBlob to ensure it's not null
-    console.log("Saving audioBlob with ID:", id, audioBlob);
-
-    // Save the audio file in IndexedDB
-    await store.put({ id, audioBlob }); // Ensure the structure is correct
-    return tx.complete;
-}
-
-// Function to open IndexedDB
-function openDb() {
-    return new Promise((resolve, reject) => {
-        const request = indexedDB.open("MyExtensionDB", 1);
-        request.onupgradeneeded = (event) => {
-            const db = event.target.result;
-            if (!db.objectStoreNames.contains("audioFiles")) {
-                db.createObjectStore("audioFiles", { keyPath: "id" });
-            }
-        };
-        request.onsuccess = (event) => resolve(event.target.result);
-        request.onerror = (event) => reject(event.target.error);
-    });
-}
-
-// Function to retrieve audio from IndexedDB
-async function getAudioFile(id) {
-    return new Promise((resolve, reject) => {
-        const dbRequest = openDb(); // Open the database
-        dbRequest.then(db => {
-            const tx = db.transaction("audioFiles", "readonly");
-            const store = tx.objectStore("audioFiles");
-            const audioRequest = store.get(id);
-
-            audioRequest.onsuccess = (event) => {
-                const audioFile = event.target.result; // Get the result from the event
-                if (!audioFile) {
-                    resolve(null); // Return null if no audio file found
-                } else {
-                    console.log("Retrieved audioFile ID:", id);
-                    resolve(audioFile.audioBlob); // Resolve with the audioBlob
-                }
-            };
-
-            audioRequest.onerror = (event) => {
-                reject(new Error("Failed to retrieve audio file from IndexedDB."));
-            };
-        }).catch(reject); // Handle any errors opening the database
-    });
-}
-
-// Function to load podcasts and populate the table
-async function loadPodcasts(podcastList) {
-    if (!currentSession?.user?.id) {
-        console.error('No authenticated user found');
-        alert('Please sign in to view your podcasts');
-        return;
-    }
-
-    // Remove table headers, just start with empty tbody
-    podcastList.innerHTML = '';
-
-    try {
-        console.log('Fetching podcasts for user:', currentSession.user.id);
-        
-        // Get all unique audio_ids and their associated articles for the user
-        const { data: audioFiles, error: audioError } = await supabase
-            .from('article_audio')
-            .select(`
-                audio_id,
-                audio_files (
-                    file_url
-                ),
-                articles (
-                    title
-                )
-            `)
-            .eq('user_id', currentSession.user.id)
-            .order('audio_id', { ascending: false });
-
-        if (audioError) {
-            console.error('Error fetching audio files:', audioError);
-            throw audioError;
-        }
-
-        // Group by audio_id to get all articles for each podcast
-        const podcastGroups = audioFiles.reduce((groups, entry) => {
-            if (!groups[entry.audio_id]) {
-                groups[entry.audio_id] = {
-                    id: entry.audio_id,
-                    file_url: entry.audio_files?.file_url,
-                    articles: []
-                };
-            }
-            if (entry.articles?.title) {
-                groups[entry.audio_id].articles.push(entry.articles.title);
-            }
-            return groups;
-        }, {});
-
-        console.log('Grouped podcasts:', podcastGroups);
-
-        // Keep track of currently playing audio
-        let currentlyPlaying = null;
-
-        // Create table rows for each podcast
-        for (const podcast of Object.values(podcastGroups)) {
-            if (!podcast.file_url) continue; // Skip if no audio URL
-
-            const row = document.createElement('tr');
-            
-            // Create play button cell
-            const playCell = document.createElement('td');
-            const playBtn = document.createElement('button');
-            playBtn.className = 'podcast-play-btn';
-            playBtn.innerHTML = '▶️';
-            playBtn.dataset.playing = 'false';
-
-            // Create audio element (but don't set src until play is clicked)
-            const audio = new Audio();
-            
-            // Handle play/pause
-            playBtn.addEventListener('click', async () => {
-                if (currentlyPlaying && currentlyPlaying !== audio) {
-                    currentlyPlaying.pause();
-                    currentlyPlaying.currentTime = 0;
-                    // Reset other play buttons
-                    document.querySelectorAll('.podcast-play-btn').forEach(btn => {
-                        if (btn !== playBtn) {
-                            btn.innerHTML = '▶️';
-                            btn.dataset.playing = 'false';
-                        }
-                    });
-                }
-
-                if (audio.paused) {
-                    // Only get signed URL and set source when playing for the first time
-                    if (!audio.src) {
-                        try {
-                            // Get the file name from the URL
-                            const audioUrlPath = new URL(podcast.file_url).pathname;
-                            const fileName = audioUrlPath.split('/').pop();
-                            
-                            // Get signed URL
-                            const { data: signedUrlData, error: signedUrlError } = await supabase
-                                .storage
-                                .from('audio-files')
-                                .createSignedUrl(`public/${fileName}`, 604800); // 7 days expiry
-
-                            if (signedUrlError) {
-                                console.error('Failed to get signed URL:', signedUrlError);
-                                throw signedUrlError;
-                            }
-
-                            audio.src = signedUrlData.signedUrl;
-                        } catch (error) {
-                            console.error('Error getting signed URL:', error);
-                            alert('Failed to load audio. Please try again.');
-                            return;
-                        }
-                    }
-                    audio.play();
-                    playBtn.innerHTML = '⏸️';
-                    playBtn.dataset.playing = 'true';
-                    currentlyPlaying = audio;
-                } else {
-                    audio.pause();
-                    playBtn.innerHTML = '▶️';
-                    playBtn.dataset.playing = 'false';
-                    currentlyPlaying = null;
-                }
-            });
-
-            // Handle audio ending
-            audio.addEventListener('ended', () => {
-                playBtn.innerHTML = '▶️';
-                playBtn.dataset.playing = 'false';
-                currentlyPlaying = null;
-            });
-
-            playCell.appendChild(playBtn);
-            row.appendChild(playCell);
-
-            // Create articles cell with list
-            const articlesCell = document.createElement('td');
-            const articlesList = document.createElement('ul');
-            articlesList.style.margin = '0';
-            articlesList.style.paddingLeft = '20px';
-            
-            podcast.articles.forEach(title => {
-                const li = document.createElement('li');
-                li.textContent = title;
-                articlesList.appendChild(li);
-            });
-            
-            articlesCell.appendChild(articlesList);
-            row.appendChild(articlesCell);
-
-            // Add delete button to the row
-            addDeleteButtonToPodcastRow(row, podcast);
-
-            podcastList.appendChild(row);
-        }
-
-        if (podcastList.children.length === 0) {
-            const emptyRow = document.createElement('tr');
-            emptyRow.innerHTML = '<td colspan="3" style="text-align: center;">No podcasts found</td>';
-            podcastList.appendChild(emptyRow);
-        }
-
-    } catch (error) {
-        console.error('Error loading podcasts:', error);
-        podcastList.innerHTML = `<tr><td colspan="3" style="text-align: center; color: red;">Failed to load podcasts. Error: ${error.message}</td></tr>`;
-    }
-}
-
-// Function to display articles
-async function displayArticles(articles) {
-    console.log('Articles page: Displaying articles:', articles);
-    const container = document.getElementById('articles-container');
-    container.innerHTML = ''; // Clear existing content
-
-    if (!articles || articles.length === 0) {
-        container.innerHTML = '<div class="no-articles">No saved articles yet.</div>';
-        return;
-    }
-
-    // Check for existing podcasts for all articles
-    const { data: existingPodcasts, error: podcastError } = await supabase
-        .from('article_audio')
-        .select(`
-            article_id,
-            audio_id,
-            audio_files (
-                file_url
-            )
-        `)
-        .in('article_id', articles.map(a => a.id));
-
-    if (podcastError) {
-        console.error('Error fetching existing podcasts:', podcastError);
-    }
-
-    // Create a map of article IDs to their audio URLs
-    const articleAudioMap = {};
-    if (existingPodcasts) {
-        existingPodcasts.forEach(entry => {
-            if (entry.audio_files?.file_url) {
-                articleAudioMap[entry.article_id] = entry.audio_files.file_url;
-            }
-        });
-    }
-
-    // Add Select All checkbox
-    const selectAllContainer = document.createElement('div');
-    selectAllContainer.className = 'select-all-container';
-    selectAllContainer.innerHTML = `
-        <label class="checkbox-container">
-            <input type="checkbox" id="selectAllCheckbox">
-            <span class="checkbox-label">Select All Articles</span>
-        </label>
-    `;
-    container.appendChild(selectAllContainer);
-
-    // Add Select All handler
-    const selectAllCheckbox = document.getElementById('selectAllCheckbox');
-    selectAllCheckbox.addEventListener('change', () => {
-        // Only select visible articles
-        const visibleArticles = Array.from(document.querySelectorAll('.article'))
-            .filter(article => article.style.display !== 'none');
-        
-        visibleArticles.forEach(article => {
-            const checkbox = article.querySelector('.article-checkbox');
-            if (checkbox) {
-                checkbox.checked = selectAllCheckbox.checked;
-                
-                // Update selectedArticles set
-                const articleId = checkbox.dataset.articleId;
-                if (selectAllCheckbox.checked) {
-                    selectedArticles.add(articleId);
-                } else {
-                    selectedArticles.delete(articleId);
-                }
-            }
-        });
-    });
-
-    // Display each article
-    articles.forEach((article, index) => {
-        const articleElement = document.createElement('div');
-        articleElement.className = 'article';
-
-        const date = new Date(article.created_at).toLocaleDateString('en-US', {
-            year: 'numeric',
-            month: 'long',
-            day: 'numeric',
-            hour: '2-digit',
-            minute: '2-digit'
-        });
-
-        // Create main article content
-        const mainContent = document.createElement('div');
-        mainContent.className = 'article-main';
-
-        const articleTitle = article.title || 'Untitled Article';
-
-        mainContent.innerHTML = `
-            <h2 class="article-title">${articleTitle}</h2>
-            <div class="article-date">Saved on ${date}</div>
-            <div class="article-content" id="content-${index}">
-                ${article.content}
-            </div>
-            <button class="expand-btn" data-index="${index}">Show More</button>
-            <button class="generate-summary-btn" data-index="${index}">${article.summary ? 'Re-generate Summary' : 'Generate Summary'}</button>
-            <div class="article-summary" id="summary-${index}">${article.summary ? `<strong>Summary:</strong> ${article.summary}` : ''}</div>
-        `;
-
-        // Create controls section
-        const controls = document.createElement('div');
-        controls.className = 'article-controls';
-
-        // Add checkbox for podcast selection
-        const checkboxContainer = document.createElement('label');
-        checkboxContainer.className = 'checkbox-container';
-        checkboxContainer.innerHTML = `
-            <input type="checkbox" class="select-article article-checkbox" data-article-id="${article.id}">
-            <span class="checkbox-label">Select for Podcast</span>
-        `;
-
-        controls.appendChild(checkboxContainer);
-
-        // Add audio player container
-        const audioContainer = document.createElement('div');
-        audioContainer.id = `audio-container-${index}`;
-        controls.appendChild(audioContainer);
-
-        // Add delete button
-        const deleteBtn = document.createElement('button');
-        deleteBtn.className = 'delete-btn';
-        deleteBtn.innerHTML = '🗑️';
-        deleteBtn.addEventListener('click', async () => {
-            try {
-                const { error } = await supabase
-                    .from('articles')
-                    .delete()
-                    .eq('id', article.id);
-
-                if (error) throw error;
-                
-                container.removeChild(articleElement);
-                if (container.children.length === 0) {
-                    container.innerHTML = '<div class="no-articles">No saved articles yet.</div>';
-                }
-            } catch (error) {
-                console.error('Error deleting article:', error);
-                alert('Failed to delete article. Please try again.');
-            }
-        });
-
-        controls.appendChild(deleteBtn);
-
-        // Add expand button handler
-        const expandBtn = mainContent.querySelector('.expand-btn');
-        expandBtn.addEventListener('click', function() {
-            const contentId = this.getAttribute('data-index');
-            const content = document.getElementById(`content-${contentId}`);
-
-            if (content.classList.contains('expanded')) {
-                content.classList.remove('expanded');
-                this.textContent = 'Show More';
-                content.scrollTop = 0;
-            } else {
-                content.classList.add('expanded');
-                this.textContent = 'Show Less';
-            }
-        });
-
-        // Add summary button handler
-        const generateSummaryBtn = mainContent.querySelector('.generate-summary-btn');
-        generateSummaryBtn.addEventListener('click', async () => {
-            try {
-                if (!currentSession) {
-                    throw new Error('Please sign in to generate summaries');
-                }
-
-                generateSummaryBtn.disabled = true;
-                generateSummaryBtn.textContent = 'Generating...';
-                
-                const summary = await generateSummary(article.content);
-                const summaryElement = mainContent.querySelector(`.article-summary#summary-${index}`);
-                summaryElement.style.display = 'block';
-                summaryElement.innerHTML = `<strong>Summary:</strong> ${summary}`;
-                
-                // Update the summary in storage and database
-                article.summary = summary;
-                const { error } = await supabase
-                    .from('articles')
-                    .update({ summary })
-                    .eq('id', article.id);
-
-                if (error) throw error;
-                
-                generateSummaryBtn.textContent = 'Re-generate Summary';
-            } catch (error) {
-                console.error('Error in summary generation:', error);
-                alert('Failed to generate summary: ' + error.message);
-                generateSummaryBtn.textContent = 'Generate Summary';
-            } finally {
-                generateSummaryBtn.disabled = false;
-            }
-        });
-
-        articleElement.appendChild(mainContent);
-        articleElement.appendChild(controls);
-        container.appendChild(articleElement);
-    });
-
-    // Add event listener for saving a new article
-    const saveArticle = async (article) => {
-        console.log('Attempting to save article:', article); // Debugging line
-
-        // Generate title if it doesn't exist
-        if (!article.title) {
-            try {
-                console.log('Generating title for article text:', article.text); // Debugging line
-                const generatedTitle = await generateTitle(article.text);
-                article.title = generatedTitle || 'Untitled Article';
-            } catch (error) {
-                console.error('Error generating title:', error);
-                article.title = 'Untitled Article'; // Fallback if title generation fails
-            }
-        }
-
-        // Save the article to storage
-        storage.articles.push(article);
-        await chrome.storage.local.set({ articles: storage.articles });
-
-        // Now save the article to Supabase, including the title
-        const { error } = await supabase
-            .from('articles')
-            .insert(article);
-
-        if (error) {
-            console.error('Error saving article to Supabase:', error);
-            throw error;
-        }
-    };
-
-    // Assuming this is part of your article submission logic
-    document.getElementById('saveArticleButton').addEventListener('click', async () => {
-        const articleText = document.getElementById('articleTextArea').value; // Get the article text from a textarea
-        const newArticle = {
-            text: articleText,
-            // other properties if needed
-        };
-
-        try {
-            await saveArticle(newArticle); // Call the saveArticle function
-            console.log('Article saved successfully:', newArticle);
-        } catch (error) {
-            console.error('Error saving article:', error);
-        }
-    });
-}
-
-// Function to check if the GCP migration feature flag is enabled
-async function isGcpMigrationEnabled() {
-    // Default to enabled for now - can be replaced with actual feature flag check once available
-    return true;
-    
-    // Uncomment and use this when feature flag table is available
-    /*
-    const { data } = await supabase
-        .from('feature_flags')
-        .select('enabled')
-        .eq('name', 'gcp_podcast_migration')
-        .single();
-        
-    return data?.enabled || false;
-    */
-}
-
-// New approach - Enqueue podcast job and poll for status
-async function startPodcastGeneration(articles) {
-    try {
-        // Only make a single request - no retry needed since the edge function
-        // now responds immediately and doesn't wait for GCP processing
-        const { data, error } = await supabase.functions.invoke('enqueue-podcast-job', {
-            body: { articles }
-        });
-        
-        if (error) throw error;
-        
-        console.log('Podcast generation job initiated:', data);
-        return data.job_id;
-    } catch (error) {
-        console.error('Error starting podcast generation:', error);
-        throw new Error(`Failed to start podcast generation: ${error.message}`);
-    }
-}
-
-// Check podcast job status
-async function checkPodcastStatus(jobId) {
-    const { data, error } = await supabase.functions.invoke('check-podcast-status', {
-        method: 'POST',
-        body: { job_id: jobId }
-    });
-    
-    if (error) throw error;
-    return data;
-}
-
-// Poll for podcast status updates
-async function pollPodcastStatus(jobId, onStatusUpdate, intervalMs = 5000) {
-    // Initialize polling
-    const poll = async () => {
-        try {
-            const status = await checkPodcastStatus(jobId);
-            
-            // Call the status update callback with the current status
-            onStatusUpdate(status);
-            
-            // If job is still in progress, continue polling
-            if (['pending', 'processing', 'script_generated'].includes(status.job?.status)) {
-                setTimeout(poll, intervalMs);
-            }
-        } catch (error) {
-            console.error('Error polling podcast status:', error);
-            onStatusUpdate({ error: error.message });
-        }
-    };
-    
-    // Start polling
-    poll();
-}
-
-// Function to update UI based on podcast status
-function updatePodcastUI(statusData) {
-    console.log('Updating podcast UI with status:', statusData);
-    
-    // Create or get the bottom audio player container
-    let bottomAudioContainer = document.getElementById('bottom-audio-player');
-    if (!bottomAudioContainer) {
-        bottomAudioContainer = document.createElement('div');
-        bottomAudioContainer.id = 'bottom-audio-player';
-        bottomAudioContainer.className = 'fixed-bottom-player';
-        document.body.appendChild(bottomAudioContainer);
-    }
-
-    // Handle error case
-    if (statusData.error) {
-        bottomAudioContainer.innerHTML = `
-            <div class="audio-player-wrapper">
-                <div class="status-indicator failed">
-                    <h3>Error Generating Podcast</h3>
-                    <p>${statusData.error}</p>
-                </div>
-            </div>
-        `;
-        return;
-    }
-
-    // Get job status and data - check both audio and audio_url properties
-    const { job, audio, audio_url } = statusData;
-    
-    // Determine which audio URL to use
-    const finalAudioUrl = audio_url || (audio && audio.url);
-    
-    // If job is complete and we have an audio URL
-    if (job && job.status === 'completed' && finalAudioUrl) {
-        bottomAudioContainer.innerHTML = `
-            <div class="audio-player-wrapper">
-                <div class="status-indicator completed">
-                    <h3>Your Podcast is Ready!</h3>
-                </div>
-                <div class="podcast-info">
-                    <p>Generated on ${new Date(job.processing_completed_at).toLocaleString()}</p>
-                </div>
-                <audio controls class="podcast-audio" src="${finalAudioUrl}">
-                    Your browser does not support the audio element.
-                </audio>
-            </div>
-        `;
-    } else if (job) {
-        // Show in-progress status
-        bottomAudioContainer.innerHTML = `
-            <div class="audio-player-wrapper">
-                <div class="status-indicator ${job.status || 'pending'}">
-                    <h3>Podcast Status: ${job.status || 'Pending'}</h3>
-                    <p>Created: ${new Date(job.created_at).toLocaleString()}</p>
-                    ${job.processing_started_at ? `<p>Processing started: ${new Date(job.processing_started_at).toLocaleString()}</p>` : ''}
-                </div>
-                ${statusData.logs && statusData.logs.length > 0 ? `
-                <div class="progress-logs">
-                    <h4>Progress:</h4>
-                    <ul>
-                        ${statusData.logs.map(log => `<li>${new Date(log.timestamp).toLocaleTimeString()}: ${log.message}</li>`).join('')}
-                    </ul>
-                </div>` : ''}
-            </div>
-        `;
+    if (isExpanded) {
+      fullContent.style.display = 'none';
+      toggleIcon.textContent = '▼';
+      toggleText.textContent = 'Show Full Article';
+      // Remove from expanded set
+      expandedArticles.delete(articleId);
     } else {
-        // Handle case where job data is missing or invalid
-        bottomAudioContainer.innerHTML = `
-            <div class="audio-player-wrapper">
-                <div class="status-indicator failed">
-                    <h3>Error Generating Podcast</h3>
-                    <p>Invalid job status data returned from server</p>
-                </div>
-            </div>
-        `;
+      fullContent.style.display = 'block';
+      toggleIcon.textContent = '▲';
+      toggleText.textContent = 'Hide Full Article';
+      // Add to expanded set
+      expandedArticles.add(articleId);
     }
+  });
+  
+  return card;
 }
 
-// Update the existing podcast generation logic to use the new approach
-document.getElementById('generatePodcast').addEventListener('click', async () => {
-    // Define all variables at the beginning
-    let selectedCheckboxes, selectedArticleIds, articles = [], bottomAudioContainer;
+/**
+ * Update pagination controls
+ * @param {number} totalPages - Total number of pages
+ */
+function updatePagination(totalPages) {
+  const pagination = document.getElementById('pagination');
+  pagination.innerHTML = '';
+  
+  if (totalPages <= 1) {
+    pagination.style.display = 'none';
+    return;
+  }
+  
+  pagination.style.display = 'flex';
+  
+  // Previous page button
+  const prevBtn = document.createElement('button');
+  prevBtn.innerHTML = '&laquo;';
+  prevBtn.disabled = currentPage === 1;
+  prevBtn.addEventListener('click', () => {
+    if (currentPage > 1) {
+      currentPage--;
+      displayArticles(filteredArticles);
+    }
+  });
+  pagination.appendChild(prevBtn);
+  
+  // Page buttons
+  const maxButtons = 5;
+  const startPage = Math.max(1, currentPage - Math.floor(maxButtons / 2));
+  const endPage = Math.min(totalPages, startPage + maxButtons - 1);
+  
+  for (let i = startPage; i <= endPage; i++) {
+    const pageBtn = document.createElement('button');
+    pageBtn.textContent = i;
+    pageBtn.className = i === currentPage ? 'active' : '';
+    pageBtn.addEventListener('click', () => {
+      currentPage = i;
+      displayArticles(filteredArticles);
+    });
+    pagination.appendChild(pageBtn);
+  }
+  
+  // Next page button
+  const nextBtn = document.createElement('button');
+  nextBtn.innerHTML = '&raquo;';
+  nextBtn.disabled = currentPage === totalPages;
+  nextBtn.addEventListener('click', () => {
+    if (currentPage < totalPages) {
+      currentPage++;
+      displayArticles(filteredArticles);
+    }
+  });
+  pagination.appendChild(nextBtn);
+}
+
+/**
+ * Toggle selection of an article
+ * @param {number} articleId - Article ID
+ * @param {boolean} selected - Whether the article is selected
+ */
+function toggleArticleSelection(articleId, selected) {
+  if (selected) {
+    selectedArticles.add(articleId);
+  } else {
+    selectedArticles.delete(articleId);
+  }
+  
+  updateButtonsState();
+}
+
+/**
+ * Toggle selection of all articles
+ * @param {Event} event - Change event
+ */
+function toggleSelectAll(event) {
+  const isChecked = event.target.checked;
+  
+  // Update all checkboxes
+  document.querySelectorAll('.article-checkbox').forEach(checkbox => {
+    checkbox.checked = isChecked;
+    toggleArticleSelection(parseInt(checkbox.dataset.id), isChecked);
+  });
+  
+  updateButtonsState();
+}
+
+/**
+ * Update the state of action buttons based on selection
+ */
+function updateButtonsState() {
+  const generatePodcastBtn = document.getElementById('generatePodcastBtn');
+  const exportSelectedBtn = document.getElementById('exportSelectedBtn');
+  const deleteSelectedBtn = document.getElementById('deleteSelectedBtn');
+  
+  const hasSelection = selectedArticles.size > 0;
+  
+  generatePodcastBtn.disabled = !hasSelection;
+  exportSelectedBtn.disabled = !hasSelection;
+  deleteSelectedBtn.disabled = !hasSelection;
+}
+
+/**
+ * Search articles by title or content
+ * @param {string} query - Search query
+ */
+function searchArticles(query) {
+  if (!query || query.trim() === '') {
+    filteredArticles = [...allArticles];
+  } else {
+    query = query.toLowerCase().trim();
+    filteredArticles = allArticles.filter(article => {
+      const title = (article.title || '').toLowerCase();
+      const content = (article.content || '').toLowerCase();
+      const summary = (article.summary || '').toLowerCase();
+      
+      return title.includes(query) || content.includes(query) || summary.includes(query);
+    });
+  }
+  
+  currentPage = 1;
+  displayArticles(filteredArticles);
+}
+
+/**
+ * Delete an article by ID
+ * @param {number} articleId - Article ID
+ */
+async function deleteArticleById(articleId) {
+  try {
+    await deleteArticle(articleId);
     
-    try {
-        selectedCheckboxes = document.querySelectorAll('.article-checkbox:checked');
-        if (selectedCheckboxes.length === 0) {
-            alert('Please select at least one article to generate a podcast.');
-            return;
-        }
+    // Remove from arrays and selection
+    allArticles = allArticles.filter(article => article.id !== articleId);
+    filteredArticles = filteredArticles.filter(article => article.id !== articleId);
+    selectedArticles.delete(articleId);
+    
+    // Update UI
+    displayArticles(filteredArticles);
+    updateButtonsState();
+    
+    showStatus('Article deleted successfully', 'success');
+  } catch (error) {
+    console.error('Error deleting article:', error);
+    showStatus(`Error deleting article: ${error.message}`, 'error');
+  }
+}
 
-        // Get selected article IDs
-        selectedArticleIds = Array.from(selectedCheckboxes).map(checkbox => checkbox.dataset.articleId);
+/**
+ * Delete all selected articles
+ */
+async function deleteSelectedArticles() {
+  if (selectedArticles.size === 0) return;
+  
+  const confirmMessage = selectedArticles.size === 1
+    ? 'Are you sure you want to delete the selected article?'
+    : `Are you sure you want to delete ${selectedArticles.size} selected articles?`;
+  
+  if (!confirm(confirmMessage)) return;
+  
+  try {
+    const deletePromises = Array.from(selectedArticles).map(id => deleteArticle(id));
+    await Promise.all(deletePromises);
+    
+    // Update arrays
+    allArticles = allArticles.filter(article => !selectedArticles.has(article.id));
+    filteredArticles = filteredArticles.filter(article => !selectedArticles.has(article.id));
+    
+    // Clear selection
+    selectedArticles.clear();
+    
+    // Update UI
+    displayArticles(filteredArticles);
+    updateButtonsState();
+    
+    showStatus('Selected articles deleted successfully', 'success');
+  } catch (error) {
+    console.error('Error deleting articles:', error);
+    showStatus(`Error deleting articles: ${error.message}`, 'error');
+  }
+}
+
+/**
+ * Export selected articles
+ */
+async function exportSelectedArticles() {
+  if (selectedArticles.size === 0) return;
+  
+  try {
+    // Get full articles for the selected IDs
+    const selectedArticlesData = await Promise.all(
+      Array.from(selectedArticles).map(id => getArticleById(id))
+    );
+    
+    // Get audio files for the selected articles
+    const audioData = [];
+    for (const article of selectedArticlesData) {
+      const audioFiles = await getAudioForArticle(article.id);
+      audioData.push(...audioFiles);
+    }
+    
+    // Create export data
+    const exportData = {
+      articles: selectedArticlesData,
+      audio: audioData,
+      exportDate: new Date().toISOString(),
+      version: '1.0'
+    };
+    
+    // Create and download JSON file
+    const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `article-export-${new Date().toISOString().split('T')[0]}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    
+    showStatus(`${selectedArticlesData.length} articles exported successfully`, 'success');
+  } catch (error) {
+    console.error('Error exporting articles:', error);
+    showStatus(`Error exporting articles: ${error.message}`, 'error');
+  }
+}
+
+/**
+ * Validate voice selections and update Generate button state
+ */
+function validateVoiceSelections() {
+  const hostVoice = document.getElementById('hostVoiceSelect').value;
+  const cohostVoice = document.getElementById('cohostVoiceSelect').value;
+  const startGenerateBtn = document.getElementById('startGenerateBtn');
+  
+  // Enable the Generate button only if both voices are selected and they are different
+  startGenerateBtn.disabled = !hostVoice || !cohostVoice || hostVoice === cohostVoice;
+  
+  if (hostVoice && cohostVoice && hostVoice === cohostVoice) {
+    showStatus('Please select different voices for host and co-host', 'warning');
+  }
+}
+
+/**
+ * Open the generate podcast modal
+ */
+async function openGeneratePodcastModal() {
+  console.log('openGeneratePodcastModal called, selectedArticles size:', selectedArticles.size);
+  
+  if (selectedArticles.size === 0) {
+    console.log('No articles selected, returning...');
+    return;
+  }
+  
+  // Get the modal and title input
+  const modal = document.getElementById('generatePodcastModal');
+  const titleInput = document.getElementById('podcastTitle');
+  
+  if (!modal || !titleInput) {
+    console.error('Modal or title input not found!');
+    return;
+  }
+  
+  console.log('Setting up the modal...');
+  
+  // Reset the modal
+  document.getElementById('progressContainer').style.display = 'none';
+  document.getElementById('generatedPodcast').style.display = 'none';
+  document.getElementById('startGenerateBtn').style.display = 'block';
+  document.getElementById('downloadPodcastBtn').style.display = 'none';
+  
+  // Set default title as current date in format "15 Mar, 2025"
+  const now = new Date();
+  const day = now.getDate();
+  const month = now.toLocaleString('en-US', { month: 'short' });
+  const year = now.getFullYear();
+  titleInput.value = `${day} ${month}, ${year}`;
+  
+  // Load voice settings from storage
+  try {
+    const hostVoice = await getSetting('host_voice');
+    if (hostVoice) {
+      document.getElementById('hostVoiceSelect').value = hostVoice;
+    }
+    
+    const cohostVoice = await getSetting('cohost_voice');
+    if (cohostVoice) {
+      document.getElementById('cohostVoiceSelect').value = cohostVoice;
+    }
+  } catch (error) {
+    console.error('Error loading voice settings:', error);
+  }
+  
+  // Validate initial voice selections
+  validateVoiceSelections();
+  
+  // Display the modal
+  console.log('Displaying the modal...');
+  modal.style.display = 'flex';
+}
+
+/**
+ * Close the generate podcast modal
+ */
+function closeGeneratePodcastModal() {
+  const modal = document.getElementById('generatePodcastModal');
+  modal.style.display = 'none';
+}
+
+/**
+ * Start podcast generation
+ */
+async function startPodcastGeneration() {
+  if (selectedArticles.size === 0) return;
+  
+  // Get selected articles
+  const articleIds = Array.from(selectedArticles);
+  
+  // Get options from form
+  const title = document.getElementById('podcastTitle').value;
+  const hostVoice = document.getElementById('hostVoiceSelect').value;
+  const cohostVoice = document.getElementById('cohostVoiceSelect').value;
+  const includeIntro = document.getElementById('includeIntro').checked;
+  const includeConclusion = document.getElementById('includeConclusion').checked;
+  
+  // Save the selected voices to storage so they're remembered for next time
+  try {
+    await saveSetting('host_voice', hostVoice);
+    await saveSetting('cohost_voice', cohostVoice);
+  } catch (error) {
+    console.error('Error saving voice settings:', error);
+    // Continue anyway - this is not critical
+  }
+  
+  // Voice to name mapping
+  const voiceNameMap = {
+    'alloy': 'Esha',
+    'echo': 'Hari',
+    'fable': 'Mira',
+    'onyx': 'Tej',
+    'nova': 'Leela',
+    'shimmer': 'Veena'
+  };
+  
+  // Get host names from the mapping
+  const hostName = voiceNameMap[hostVoice];
+  const cohostName = voiceNameMap[cohostVoice];
+  
+  // Prepare UI for generation
+  document.getElementById('progressContainer').style.display = 'block';
+  document.getElementById('startGenerateBtn').disabled = true;
+  document.getElementById('progressText').textContent = `Starting podcast generation with ${hostName} and ${cohostName}...`;
+  document.getElementById('progressFill').style.width = '5%';
+  
+  try {
+    // Check for API key
+    const apiKey = await getSetting('openai_api_key');
+    if (!apiKey) {
+      throw new Error('OpenAI API key not set. Please go to settings and add your API key.');
+    }
+    
+    // Set up options
+    const options = {
+      title,
+      voiceMap: {
+        'HOST': hostVoice,
+        'CO-HOST': cohostVoice
+      },
+      hostNames: {
+        'HOST': hostName,
+        'CO-HOST': cohostName
+      },
+      includeIntroduction: includeIntro,
+      includeConclusion: includeConclusion,
+      // Add explicit name replacements
+      nameReplacements: {
+        'Alice': hostName,
+        'Bob': cohostName
+      }
+    };
+    
+    // Generate podcast script and start audio generation in background
+    const podcastData = await generatePodcast(articleIds, options, updateProgress);
+    
+    // Show the generated podcast script immediately
+    document.getElementById('generatedPodcast').style.display = 'block';
+    document.getElementById('startGenerateBtn').style.display = 'none';
+    
+    // Show the script in the UI
+    const scriptElement = document.getElementById('podcastScript') || document.createElement('div');
+    if (!document.getElementById('podcastScript')) {
+      scriptElement.id = 'podcastScript';
+      scriptElement.style.display = 'none';
+      scriptElement.style.maxHeight = '300px';
+      scriptElement.style.overflowY = 'auto';
+      scriptElement.style.border = '1px solid var(--border-color)';
+      scriptElement.style.borderRadius = '6px';
+      scriptElement.style.padding = '15px';
+      scriptElement.style.background = '#f8f9fa';
+      scriptElement.style.whiteSpace = 'pre-wrap';
+      scriptElement.style.lineHeight = '1.5';
+      document.querySelector('.script-container').appendChild(scriptElement);
+    }
+    
+    // Color-code the script based on speaker
+    const coloredScript = podcastData.script
+      .split('\n')
+      .map(line => {
+        // Get the first word before the colon (the speaker name)
+        const speaker = line.split(':')[0];
         
-        // Show loading state
-        document.getElementById('loadingIcon').style.display = 'inline-block';
-        document.getElementById('generatePodcast').disabled = true;
-        
-        // Get the articles data
-        for (const articleId of selectedArticleIds) {
-            const { data, error } = await supabase
-                .from('articles')
-                .select('*')
-                .eq('id', articleId)
-                .single();
-
-            if (error) {
-                console.error('Error fetching article:', error);
-                continue;
-            }
-
-            articles.push(data);
+        // Replace HOST/CO-HOST with actual names if present
+        let processedLine = line;
+        if (line.startsWith('HOST:')) {
+          processedLine = line.replace('HOST:', `${hostName}:`);
+        } else if (line.startsWith('CO-HOST:')) {
+          processedLine = line.replace('CO-HOST:', `${cohostName}:`);
         }
-
-        // Create or get the bottom audio player container - define this once at the beginning
-        bottomAudioContainer = document.getElementById('bottom-audio-player');
-        if (!bottomAudioContainer) {
-            bottomAudioContainer = document.createElement('div');
-            bottomAudioContainer.id = 'bottom-audio-player';
-            bottomAudioContainer.className = 'fixed-bottom-player';
-            document.body.appendChild(bottomAudioContainer);
-        }
-
-        // Check if GCP migration is enabled
-        const useGcp = await isGcpMigrationEnabled();
         
-        if (useGcp) {
-            // Show initial loading state
-            bottomAudioContainer.innerHTML = `
-                <div class="audio-player-wrapper">
-                    <div class="status-indicator pending">
-                        <h3>Starting Podcast Generation...</h3>
-                    </div>
-                </div>
-            `;
-            
-            // Start GCP-based podcast generation and get job ID
-            const jobId = await startPodcastGeneration(articles);
-            console.log('Podcast generation job started with ID:', jobId);
-            
-            // Update UI with initial job status
-            bottomAudioContainer.innerHTML = `
-                <div class="audio-player-wrapper">
-                    <div class="status-indicator pending">
-                        <h3>Podcast Generation Started</h3>
-                        <p>Job ID: ${jobId}</p>
-                        <p>Starting processing...</p>
-                    </div>
-                </div>
-            `;
-            
-            // Start polling for status updates
-            pollPodcastStatus(jobId, updatePodcastUI);
+        // Color based on the speaker name
+        if (speaker === hostName || speaker === 'HOST') {
+          return `<span style="color: #2563eb;">${processedLine}</span>`;
+        } else if (speaker === cohostName || speaker === 'CO-HOST') {
+          return `<span style="color: #dc2626;">${processedLine}</span>`;
+        }
+        return processedLine;
+      })
+      .join('\n');
+    
+    // Set the script content with colors
+    scriptElement.innerHTML = coloredScript;
+    
+    // Set up script toggle
+    const scriptToggle = document.getElementById('scriptToggle');
+    if (scriptToggle) {
+      // Remove existing event listeners by cloning and replacing
+      const newScriptToggle = scriptToggle.cloneNode(true);
+      scriptToggle.parentNode.replaceChild(newScriptToggle, scriptToggle);
+      
+      // Add new event listener
+      newScriptToggle.addEventListener('click', function() {
+        const scriptContainer = document.getElementById('podcastScript');
+        if (scriptContainer.style.display === 'none') {
+          scriptContainer.style.display = 'block';
+          newScriptToggle.textContent = 'Hide Script';
         } else {
-            // Use legacy workflow
-            console.log('No existing podcast found, generating new one...');
-            const { data: podcastData, error: generationError } = await supabase.functions.invoke('generate-podcast', {
-                body: { articles }
-            });
-
-            if (generationError) {
-                throw new Error(`Failed to generate podcast: ${generationError.message}`);
-            }
-
-            console.log('Podcast generated successfully:', podcastData);
-
-            // Clear the loading state wrapper
-            bottomAudioContainer.innerHTML = '';
-
-            // Extract the file path from the audio_url
-            const audioUrlPath = new URL(podcastData.audio_url).pathname;
-            const fileName = audioUrlPath.split('/').pop();
-            
-            // Get the signed URL for the audio file
-            const { data: signedUrlData, error: signedUrlError } = await supabase
-                .storage
-                .from('audio-files')
-                .createSignedUrl(`public/${fileName}`, 604800);
-
-            if (signedUrlError) {
-                console.error('Failed to get signed URL:', signedUrlError);
-                throw new Error(`Failed to get signed URL: ${signedUrlError.message}`);
-            }
-
-            const audioUrl = signedUrlData.signedUrl;
-            console.log('Got signed URL for audio:', audioUrl);
-
-            // Update the audio player with the new podcast - use the already defined bottomAudioContainer
-            bottomAudioContainer.innerHTML = `
-                <div class="audio-player-wrapper">
-                    <div class="podcast-info">
-                        <h3>Your Podcast is Ready!</h3>
-                    </div>
-                    <audio controls class="podcast-audio" src="${audioUrl}">
-                        Your browser does not support the audio element.
-                    </audio>
-                </div>
-            `;
+          scriptContainer.style.display = 'none';
+          newScriptToggle.textContent = 'Show Script';
         }
-    } catch (error) {
-        console.error('Error generating podcast:', error);
-        alert(`Error generating podcast: ${error.message}`);
-        
-        // Show error in the audio player if it exists
-        const bottomAudioContainer = document.getElementById('bottom-audio-player');
-        if (bottomAudioContainer) {
-            bottomAudioContainer.innerHTML = `
-                <div class="audio-player-wrapper">
-                    <div class="status-indicator failed">
-                        <h3>Error Generating Podcast</h3>
-                        <p>${error.message}</p>
-                    </div>
-                </div>
-            `;
-        }
-    } finally {
-        // Hide loading icon and re-enable button
-        document.getElementById('loadingIcon').style.display = 'none';
-        document.getElementById('generatePodcast').disabled = false;
+      });
     }
-});
-
-// Helper function to check if a file exists in storage
-async function checkFileExists(bucket, path) {
-    try {
-        console.log(`Checking if file exists in bucket: ${bucket}, path: ${path}`);
-        
-        // Try to get file metadata, which will fail if file doesn't exist
-        const { data, error } = await supabase
-            .storage
-            .from(bucket)
-            .createSignedUrl(path, 10); // Short expiry just to check existence
-            
-        if (error && error.message.includes('Not Found')) {
-            console.log('File does not exist in storage');
-            return false;
-        }
-        
-        // If we get here, file exists
-        console.log('File exists in storage');
-        return true;
-    } catch (error) {
-        console.error('Error checking file existence:', error);
-        // Assume file doesn't exist on error
-        return false;
+    
+    // Audio is being generated in the background
+    // Show a message that audio is being generated
+    const audioStatusElement = document.getElementById('audioStatus') || document.createElement('div');
+    if (!document.getElementById('audioStatus')) {
+      audioStatusElement.id = 'audioStatus';
+      audioStatusElement.className = 'audio-status';
+      document.getElementById('generatedPodcast').appendChild(audioStatusElement);
     }
+    audioStatusElement.innerHTML = '<p>Audio is being generated in the background. The player will appear when ready.</p>';
+    
+    // The download button will be shown when audio generation is complete
+    document.getElementById('downloadPodcastBtn').style.display = 'none';
+    
+    // Store script data for future reference
+    currentPodcastScriptData = podcastData;
+    
+    // Store the generated podcast ID
+    currentPodcastId = podcastData.podcastId;
+    
+    // Show the generated podcast
+    document.getElementById('generatedPodcast').style.display = 'block';
+    document.getElementById('startGenerateBtn').style.display = 'none';
+    document.getElementById('downloadPodcastBtn').style.display = 'block';
+    
+    // Set up audio player
+    const audioPlayer = document.getElementById('audioPlayer');
+    const audio = await getAudioById(podcastData.podcastId);
+    
+    if (audio && audio.blob) {
+      const audioUrl = URL.createObjectURL(audio.blob);
+      audioPlayer.src = audioUrl;
+      
+      // Show podcast info
+      const duration = safeFormatDuration(safeEstimateAudioDuration(podcastData.duration));
+      const sizeInMb = (podcastData.size / (1024 * 1024)).toFixed(2);
+      document.getElementById('podcastInfo').textContent = 
+        `Duration: ${duration} | Size: ${sizeInMb} MB | Articles: ${articleIds.length}`;
+        
+      // Add podcast script to the display
+      if (audio.script) {
+        const scriptContainer = document.getElementById('podcastScript');
+        scriptContainer.textContent = audio.script;
+        
+        // Set up script toggle
+        const scriptToggle = document.getElementById('scriptToggle');
+        scriptToggle.addEventListener('click', function() {
+          const scriptContainer = document.getElementById('podcastScript');
+          if (scriptContainer.style.display === 'none') {
+            scriptContainer.style.display = 'block';
+            scriptToggle.textContent = 'Hide Script';
+          } else {
+            scriptContainer.style.display = 'none';
+            scriptToggle.textContent = 'Show Script';
+          }
+        });
+      }
+    }
+  } catch (error) {
+    console.error('Error generating podcast:', error);
+    document.getElementById('progressText').textContent = `Error: ${error.message}`;
+    document.getElementById('progressFill').style.backgroundColor = 'var(--error-color)';
+  } finally {
+    document.getElementById('startGenerateBtn').disabled = false;
+  }
 }
 
-// Update the delete podcast function to check file existence
-async function deletePodcast(audioId) {
-    try {
-        console.log('Starting complete podcast deletion for audioId:', audioId);
+/**
+ * Download the generated podcast
+ */
+async function downloadPodcast() {
+  if (!currentPodcastId) return;
+  
+  try {
+    const podcast = await getAudioById(currentPodcastId);
+    
+    if (!podcast || !podcast.blob) {
+      throw new Error('Podcast audio not found');
+    }
+    
+    // Create download link
+    const url = URL.createObjectURL(podcast.blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${podcast.title || 'podcast'}.mp3`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (error) {
+    console.error('Error downloading podcast:', error);
+    showStatus(`Error downloading podcast: ${error.message}`, 'error');
+  }
+}
+
+/**
+ * Get audio by ID
+ * @param {number} id - Audio ID
+ * @returns {Promise<Object>} Audio object
+ */
+async function getAudioById(id) {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    
+    request.onerror = (event) => {
+      reject(new Error("Failed to open database."));
+    };
+    
+    request.onsuccess = (event) => {
+      const db = event.target.result;
+      const transaction = db.transaction(["audio"], "readonly");
+      const store = transaction.objectStore("audio");
+      const getRequest = store.get(id);
+      
+      getRequest.onsuccess = (event) => {
+        resolve(event.target.result);
+      };
+      
+      getRequest.onerror = (event) => {
+        reject(new Error("Failed to retrieve audio file."));
+      };
+    };
+  });
+}
+
+/**
+ * Update progress UI and handle completion events
+ * @param {Object} progress - Progress information
+ */
+async function updateProgress(progress) {
+  const progressText = document.getElementById('progressText');
+  const progressFill = document.getElementById('progressFill');
+  
+  if (progress.error) {
+    progressText.textContent = `Error: ${progress.message}`;
+    progressFill.style.backgroundColor = 'var(--error-color)';
+    return;
+  }
+  
+  progressText.textContent = progress.message || 'Processing...';
+  progressFill.style.width = `${progress.progress || 0}%`;
+  
+  if (progress.stage === 'complete') {
+    document.getElementById('progressText').textContent = 'Podcast generation complete';
+    document.getElementById('progressFill').style.width = '100%';
+    
+    // Show download button
+    const downloadBtn = document.getElementById('downloadPodcastBtn');
+    downloadBtn.style.display = 'block';
+    
+    // Remove existing event listeners by cloning and replacing
+    const newDownloadBtn = downloadBtn.cloneNode(true);
+    downloadBtn.parentNode.replaceChild(newDownloadBtn, downloadBtn);
+    
+    // Add new event listener
+    newDownloadBtn.addEventListener('click', downloadPodcast);
+    
+    // Update the UI to show the audio player
+    const audioStatusElement = document.getElementById('audioStatus');
+    if (audioStatusElement) {
+      audioStatusElement.innerHTML = '<p>Audio generation complete!</p>';
+    }
+    
+    // Show download button
+    document.getElementById('downloadPodcastBtn').style.display = 'block';
+    
+    // Set up audio player
+    const audioPlayer = document.getElementById('audioPlayer');
+    
+    getAudioById(progress.audioData.podcastId).then(audio => {
+      if (audio && audio.blob) {
+        const url = URL.createObjectURL(audio.blob);
+        audioPlayer.src = url;
+        audioPlayer.style.display = 'block';
         
-        // 1. Get the audio file information
-        const { data: audioFile, error: audioError } = await supabase
-            .from('audio_files')
-            .select('file_url')
-            .eq('id', audioId)
-            .single();
-            
-        if (audioError) {
-            console.error('Error fetching audio file info:', audioError);
-            throw new Error(`Failed to fetch audio file info: ${audioError.message}`);
-        }
-        
-        if (!audioFile) {
-            console.error('Audio file not found in database');
-            throw new Error('Audio file not found in database');
-        }
-        
-        // 2. Delete the actual file from storage if it exists
-        // Extract the filename from the file_url
-        const storagePath = 'public/' + audioFile.file_url.split('/').pop();
-        
-        // Check if file exists before trying to delete
-        const fileExists = await checkFileExists('audio-files', storagePath);
-        
-        if (fileExists) {
-            console.log('Removing file from storage:', storagePath);
-            const { error: storageError } = await supabase
-                .storage
-                .from('audio-files')
-                .remove([storagePath]);
-                
-            if (storageError) {
-                console.error('Error removing file from storage:', storageError);
-                // Continue with deletion even if storage removal fails
-            }
+        // Show podcast info
+        const duration = safeFormatDuration(progress.audioData.duration);
+        const sizeInMb = (progress.audioData.size / (1024 * 1024)).toFixed(2);
+        document.getElementById('podcastInfo').textContent = 
+          `Duration: ${duration} | Size: ${sizeInMb} MB | Articles: ${progress.audioData?.articleIds?.length || 'Unknown'}`;
+      }
+    }).catch(error => {
+      console.error('Error loading audio:', error);
+      showStatus(`Error loading audio: ${error.message}`, 'error');
+    });
+  }
+}
+
+/**
+ * Show a status message
+ * @param {string} message - Message to show
+ * @param {string} type - Message type (success, error, warning)
+ */
+function showStatus(message, type) {
+  const statusMessage = document.getElementById('statusMessage');
+  statusMessage.textContent = message;
+  statusMessage.className = `status-message ${type}`;
+  statusMessage.style.display = 'block';
+  
+  setTimeout(() => {
+    statusMessage.style.display = 'none';
+  }, 5000);
+}
+
+/**
+ * Switch between articles and podcasts view
+ * @param {string} view - View to switch to ('articles' or 'podcasts')
+ */
+function switchView(view) {
+  // Only handle the views that actually exist
+  if (view !== 'articles' && view !== 'podcasts') {
+    console.warn(`Invalid view: ${view}. Only 'articles' and 'podcasts' are supported.`);
+    return;
+  }
+  
+  const articlesView = document.getElementById('articlesView');
+  const podcastsView = document.getElementById('podcastsView');
+  const viewArticlesBtn = document.getElementById('viewArticlesBtn');
+  const viewPodcastsBtn = document.getElementById('viewPodcastsBtn');
+  const deleteSelectedBtn = document.getElementById('deleteSelectedBtn');
+  
+  if (!articlesView || !podcastsView) {
+    console.error('Required view elements are missing.');
+    return;
+  }
+  
+  // Remove existing listener to avoid duplicates
+  if (deleteSelectedBtn) {
+    // Clone and replace to remove all event listeners
+    const newDeleteBtn = deleteSelectedBtn.cloneNode(true);
+    deleteSelectedBtn.parentNode.replaceChild(newDeleteBtn, deleteSelectedBtn);
+  }
+  
+  if (view === 'articles') {
+    // Switch to articles view
+    articlesView.style.display = 'block';
+    podcastsView.style.display = 'none';
+    
+    if (viewArticlesBtn && viewPodcastsBtn) {
+      viewArticlesBtn.classList.add('active');
+      viewPodcastsBtn.classList.remove('active');
+    }
+    
+    // Clear podcast selections
+    selectedPodcasts.clear();
+    
+    // Set delete button to handle article deletions
+    const deleteBtn = document.getElementById('deleteSelectedBtn');
+    if (deleteBtn) {
+      deleteBtn.addEventListener('click', deleteSelectedArticles);
+      updateButtonsState(); // Update based on selected articles
+    }
+  } else if (view === 'podcasts') {
+    // Switch to podcasts view
+    articlesView.style.display = 'none';
+    podcastsView.style.display = 'block';
+    
+    if (viewArticlesBtn && viewPodcastsBtn) {
+      viewArticlesBtn.classList.remove('active');
+      viewPodcastsBtn.classList.add('active');
+    }
+    
+    // Clear article selections
+    selectedArticles.clear();
+    
+    // Set delete button to handle podcast deletions
+    const deleteBtn = document.getElementById('deleteSelectedBtn');
+    if (deleteBtn) {
+      deleteBtn.addEventListener('click', deleteSelectedPodcasts);
+      updatePodcastButtonsState(); // Update based on selected podcasts
+    }
+    
+    loadPodcasts();
+  }
+}
+
+/**
+ * Load all podcasts from the database
+ */
+async function loadPodcasts() {
+  try {
+    allPodcasts = await getAllPodcasts();
+    displayPodcasts(allPodcasts);
+  } catch (error) {
+    console.error('Error loading podcasts:', error);
+    showStatus('Error loading podcasts: ' + error.message, 'error');
+  }
+}
+
+/**
+ * Get all podcasts from the database
+ * @returns {Promise<Array>} Array of podcast objects
+ */
+async function getAllPodcasts() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    
+    request.onerror = () => {
+      reject(new Error("Failed to open database."));
+    };
+    
+    request.onsuccess = (event) => {
+      const db = event.target.result;
+      const transaction = db.transaction(["audio"], "readonly");
+      const store = transaction.objectStore("audio");
+      const index = store.index("type");
+      const query = IDBKeyRange.only("podcast");
+      const podcasts = [];
+      
+      index.openCursor(query).onsuccess = (event) => {
+        const cursor = event.target.result;
+        if (cursor) {
+          // Don't include the blob in the results to save memory
+          const podcast = { ...cursor.value };
+          delete podcast.blob;
+          podcasts.push(podcast);
+          cursor.continue();
         } else {
-            console.log('File not found in storage, skipping file deletion');
+          // Sort by date created (newest first)
+          podcasts.sort((a, b) => new Date(b.dateCreated) - new Date(a.dateCreated));
+          resolve(podcasts);
         }
-        
-        // 3. Delete related entries in article_audio table
-        console.log('Removing article_audio entries for audioId:', audioId);
-        const { error: articleAudioError } = await supabase
-            .from('article_audio')
-            .delete()
-            .eq('audio_id', audioId);
-            
-        if (articleAudioError) {
-            console.error('Error removing article_audio entries:', articleAudioError);
-            throw new Error(`Failed to remove article_audio entries: ${articleAudioError.message}`);
-        }
-        
-        // 4. Delete related entries in podcast_jobs table (if exists)
-        try {
-            console.log('Removing podcast_jobs entries for audioId:', audioId);
-            const { error: jobsError } = await supabase
-                .from('podcast_jobs')
-                .delete()
-                .eq('audio_id', audioId);
-                
-            if (jobsError) {
-                console.error('Error removing podcast_jobs entries:', jobsError);
-                // Continue with deletion even if jobs removal fails
-            }
-        } catch (podcastJobsError) {
-            console.error('Error with podcast_jobs table, might not exist:', podcastJobsError);
-            // Continue with deletion even if table doesn't exist
-        }
-        
-        // 5. Check for GCP references and clean those up if enabled
-        const useGcp = await isGcpMigrationEnabled();
-        if (useGcp) {
-            console.log('Cleaning up any GCP resources...');
-            try {
-                // Try a safer approach by checking if the function exists
-                const { data: functions } = await supabase.functions.list();
-                const hasCleanupFunction = functions.some(f => f.name === 'cleanup-gcp-resources');
-                
-                if (hasCleanupFunction) {
-                    const { error: gcpCleanupError } = await supabase.functions.invoke('cleanup-gcp-resources', {
-                        body: { audioId }
-                    });
-                    
-                    if (gcpCleanupError) {
-                        console.error('Error cleaning up GCP resources:', gcpCleanupError);
-                    }
-                } else {
-                    console.log('GCP cleanup function not found, skipping');
-                }
-            } catch (gcpError) {
-                console.error('Failed to clean up GCP resources:', gcpError);
-                // Continue with deletion even if GCP cleanup fails
-            }
-        }
-        
-        // 6. Finally, delete the audio_files entry
-        console.log('Removing audio_files entry:', audioId);
-        const { error: audioFilesError } = await supabase
-            .from('audio_files')
-            .delete()
-            .eq('id', audioId);
-            
-        if (audioFilesError) {
-            console.error('Error removing audio_files entry:', audioFilesError);
-            throw new Error(`Failed to remove audio_files entry: ${audioFilesError.message}`);
-        }
-        
-        console.log('Podcast deletion completed successfully for audioId:', audioId);
-        return true;
-    } catch (error) {
-        console.error('Error in deletePodcast function:', error);
-        throw error;
-    }
+      };
+      
+      transaction.onerror = () => {
+        reject(new Error("Failed to retrieve podcasts."));
+      };
+    };
+  });
 }
 
-// Add delete button to podcasts table
-function addDeleteButtonToPodcastRow(row, podcast) {
-    const deleteCell = document.createElement('td');
-    const deleteBtn = document.createElement('button');
-    deleteBtn.textContent = 'Delete';
-    deleteBtn.className = 'delete-podcast-btn';
+/**
+ * Display podcasts in the UI
+ * @param {Array} podcasts - Array of podcast objects
+ */
+function displayPodcasts(podcasts) {
+  const container = document.getElementById('podcasts-container');
+  container.innerHTML = '';
+  
+  // Add select all checkbox for podcasts - now at the top with improved styling
+  const selectAllContainer = document.createElement('div');
+  selectAllContainer.className = 'select-all-container';
+  selectAllContainer.style.cssText = 'padding: 15px 0; margin-bottom: 20px; border-bottom: 1px solid var(--border-color);';
+  selectAllContainer.innerHTML = `
+    <label class="checkbox-container" style="display: inline-flex; align-items: center; font-size: 15px; color: var(--text-color); font-weight: 500;">
+      <input type="checkbox" id="selectAllPodcastsCheckbox">
+      <span class="checkmark"></span>
+      <span class="checkbox-label" style="margin-left: 24px; white-space: nowrap;">Select All Podcasts</span>
+    </label>
+  `;
+  container.appendChild(selectAllContainer);
+  
+  if (!podcasts || podcasts.length === 0) {
+    container.innerHTML += `<div class="no-podcasts" style="grid-column: 1 / -1; text-align: center; padding: 30px;">
+      <p>No podcasts found. Generate a podcast from articles to see them here.</p>
+    </div>`;
+    return;
+  }
+  
+  // Add event listener for the select all checkbox
+  const selectAllCheckbox = document.getElementById('selectAllPodcastsCheckbox');
+  selectAllCheckbox.addEventListener('change', toggleSelectAllPodcasts);
+  
+  // For each podcast, create a card
+  podcasts.forEach(podcast => {
+    const card = createPodcastCard(podcast);
+    container.appendChild(card);
+  });
+}
+
+/**
+ * Create a podcast card element
+ * @param {Object} podcast - Podcast object
+ * @returns {HTMLElement} Podcast card element
+ */
+function createPodcastCard(podcast) {
+  const card = document.createElement('div');
+  card.className = 'podcast-card';
+  
+  // Format date
+  const date = new Date(podcast.dateCreated);
+  const formattedDate = date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
+  
+  // Get article titles if available
+  let articlesList = '';
+  if (podcast.articleIds && podcast.articleIds.length > 0) {
+    const articleTitles = [];
     
-    // Create a status indicator element
-    const statusIndicator = document.createElement('div');
-    statusIndicator.className = 'delete-status';
-    statusIndicator.style.display = 'none';
-    statusIndicator.style.fontSize = '12px';
-    statusIndicator.style.marginTop = '5px';
+    for (const articleId of podcast.articleIds) {
+      const article = allArticles.find(a => a.id === articleId);
+      if (article) {
+        articleTitles.push(article.title || 'Untitled Article');
+      }
+    }
     
-    deleteBtn.addEventListener('click', async (event) => {
-        event.preventDefault();
-        if (confirm('Are you sure you want to delete this podcast? This cannot be undone.')) {
-            try {
-                // Show deletion in progress
-                row.classList.add('deleting');
-                deleteBtn.disabled = true;
-                deleteBtn.textContent = 'Deleting...';
-                statusIndicator.style.display = 'block';
-                statusIndicator.textContent = 'Deletion in progress...';
-                statusIndicator.style.color = '#666';
-                
-                // Run the deletion process
-                await deletePodcast(podcast.id);
-                
-                // Success handling
-                statusIndicator.textContent = 'Successfully deleted!';
-                statusIndicator.style.color = 'green';
-                
-                // Wait a moment to show success message before removing row
-                setTimeout(() => {
-                    row.remove(); // Remove row from table after successful deletion
-                    
-                    // Refresh the podcasts list
-                    loadPodcasts(document.getElementById('podcast-list'));
-                }, 1000);
-                
-                // Clear browser cache for this audio URL if possible
-                if (podcast.file_url) {
-                    try {
-                        await clearAudioCaches(podcast.file_url);
-                        console.log('Cleared cache for URL:', podcast.file_url);
-                    } catch (cacheError) {
-                        console.warn('Could not clear audio cache:', cacheError);
-                    }
-                }
-            } catch (error) {
-                console.error('Error during podcast deletion:', error);
-                
-                // Error handling with more details
-                statusIndicator.textContent = `Error: ${error.message}`;
-                statusIndicator.style.color = 'red';
-                
-                // Re-enable the button for retry
-                deleteBtn.disabled = false;
-                deleteBtn.textContent = 'Retry Delete';
-                row.classList.remove('deleting');
-                
-                // Show error in console with full details
-                console.error('Full error details:', error);
-            }
+    if (articleTitles.length > 0) {
+      articlesList = `
+        <div class="podcast-articles">
+          <h4>Articles</h4>
+          ${articleTitles.map(title => `<div class="article-title">${title}</div>`).join('')}
+        </div>
+      `;
+    }
+  }
+  
+  // Get host names from the podcast settings
+  const hostName = podcast.settings?.hostNames?.['HOST'] || 'Host';
+  const cohostName = podcast.settings?.hostNames?.['CO-HOST'] || 'Co-Host';
+  
+  // Speaker info
+  const speakerInfo = `
+    <div class="speaker-info">
+      Host: ${hostName} | Co-Host: ${cohostName}
+    </div>
+  `;
+  
+  card.innerHTML = `
+    <div class="podcast-header">
+      <div style="display: flex; align-items: center;">
+        <label class="checkbox-container" style="margin-right: 12px;">
+          <input type="checkbox" class="podcast-checkbox" data-id="${podcast.id}" ${selectedPodcasts.has(podcast.id) ? 'checked' : ''}>
+          <span class="checkmark"></span>
+        </label>
+        <h3 class="podcast-title">${podcast.title || 'Untitled Podcast'}</h3>
+      </div>
+    </div>
+    <div class="podcast-body">
+      <div class="podcast-info">
+        Created: ${formattedDate}
+      </div>
+      <audio class="audio-player" controls></audio>
+      ${speakerInfo}
+      ${articlesList}
+      <div class="podcast-actions" style="margin-top: 15px;">
+        <button class="btn btn-secondary view-script-btn">View Script</button>
+        <button class="btn btn-primary download-btn">Download</button>
+      </div>
+    </div>
+  `;
+  
+  // Set up audio player
+  const audioPlayer = card.querySelector('.audio-player');
+  getAudioById(podcast.id).then(audio => {
+    if (audio && audio.blob) {
+      const audioUrl = URL.createObjectURL(audio.blob);
+      audioPlayer.src = audioUrl;
+    }
+  });
+  
+  // Set up selection
+  const checkbox = card.querySelector('.podcast-checkbox');
+  checkbox.addEventListener('change', (e) => {
+    togglePodcastSelection(podcast.id, e.target.checked);
+  });
+  
+  // Set up view script button
+  const viewScriptBtn = card.querySelector('.view-script-btn');
+  viewScriptBtn.addEventListener('click', () => {
+    // Create modal for script display
+    const modal = document.createElement('div');
+    modal.className = 'modal';
+    modal.style.display = 'flex';
+    
+    // Color-code the script based on speaker
+    const coloredScript = (podcast.script || 'No script available')
+      .split('\n')
+      .map(line => {
+        // Get the first word before the colon (the speaker name)
+        const speaker = line.split(':')[0];
+        
+        // Replace HOST/CO-HOST with actual names if present
+        let processedLine = line;
+        if (line.startsWith('HOST:')) {
+          processedLine = line.replace('HOST:', `${hostName}:`);
+        } else if (line.startsWith('CO-HOST:')) {
+          processedLine = line.replace('CO-HOST:', `${cohostName}:`);
         }
+        
+        // Color based on the speaker name
+        if (speaker === hostName || speaker === 'HOST') {
+          return `<span style="color: #2563eb;">${processedLine}</span>`;
+        } else if (speaker === cohostName || speaker === 'CO-HOST') {
+          return `<span style="color: #dc2626;">${processedLine}</span>`;
+        }
+        return processedLine;
+      })
+      .join('\n');
+    
+    modal.innerHTML = `
+      <div class="modal-content" style="width: 80%; max-width: 800px;">
+        <div class="modal-header">
+          <h2>Podcast Script</h2>
+          <button class="modal-close">&times;</button>
+        </div>
+        <div class="modal-body" style="max-height: 70vh; overflow-y: auto;">
+          <pre style="white-space: pre-wrap; padding: 10px; background: #f8f9fa; border-radius: 6px; line-height: 1.6;">${coloredScript}</pre>
+        </div>
+      </div>
+    `;
+    
+    document.body.appendChild(modal);
+    
+    // Set up close button
+    const closeBtn = modal.querySelector('.modal-close');
+    closeBtn.addEventListener('click', () => {
+      document.body.removeChild(modal);
     });
     
-    // Add elements to the cell
-    deleteCell.appendChild(deleteBtn);
-    deleteCell.appendChild(statusIndicator);
-    row.appendChild(deleteCell);
+    // Close when clicking outside the content
+    modal.addEventListener('click', (event) => {
+      if (event.target === modal) {
+        document.body.removeChild(modal);
+      }
+    });
+  });
+  
+  // Set up download button
+  const downloadBtn = card.querySelector('.download-btn');
+  downloadBtn.addEventListener('click', () => {
+    getAudioById(podcast.id).then(audio => {
+      if (audio && audio.blob) {
+        const url = URL.createObjectURL(audio.blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${podcast.title || 'podcast'}.mp3`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
+    }).catch(error => {
+      console.error('Error downloading podcast:', error);
+      showStatus(`Error downloading podcast: ${error.message}`, 'error');
+    });
+  });
+  
+  return card;
 }
 
-// Utility function to clear browser caches for specific URL patterns
-async function clearAudioCaches(urlPattern = null) {
-    try {
-        // Try to access the Cache API
-        if ('caches' in window) {
-            // Get all cache names
-            const cacheNames = await caches.keys();
-            
-            for (const cacheName of cacheNames) {
-                // Open each cache
-                const cache = await caches.open(cacheName);
-                const requests = await cache.keys();
-                
-                // Filter requests matching our pattern if one is provided
-                const requestsToDelete = urlPattern 
-                    ? requests.filter(req => req.url.includes(urlPattern))
-                    : requests.filter(req => 
-                        req.url.includes('audio-files') || 
-                        req.url.includes('.mp3') || 
-                        req.url.includes('.wav') ||
-                        req.url.includes('/storage/v1/')
-                    );
-                
-                // Delete matching requests
-                for (const request of requestsToDelete) {
-                    console.log('Clearing cached URL:', request.url);
-                    await cache.delete(request);
-                }
-            }
-            console.log('Audio caches cleared successfully');
-            return true;
-        } else {
-            console.warn('Cache API not available in this browser');
-            return false;
-        }
-    } catch (error) {
-        console.error('Error clearing caches:', error);
-        return false;
+/**
+ * Toggle selection of a podcast
+ * @param {number} podcastId - Podcast ID
+ * @param {boolean} selected - Whether the podcast is selected
+ */
+function togglePodcastSelection(podcastId, selected) {
+  if (selected) {
+    selectedPodcasts.add(podcastId);
+  } else {
+    selectedPodcasts.delete(podcastId);
+  }
+  
+  updatePodcastButtonsState();
+}
+
+/**
+ * Toggle selection of all podcasts
+ * @param {Event} event - Change event
+ */
+function toggleSelectAllPodcasts(event) {
+  const isChecked = event.target.checked;
+  
+  // Update all checkboxes
+  document.querySelectorAll('.podcast-checkbox').forEach(checkbox => {
+    checkbox.checked = isChecked;
+    togglePodcastSelection(parseInt(checkbox.dataset.id), isChecked);
+  });
+  
+  updatePodcastButtonsState();
+}
+
+/**
+ * Update the state of podcast action buttons based on selection
+ */
+function updatePodcastButtonsState() {
+  const hasSelection = selectedPodcasts.size > 0;
+  
+  // Update the main delete button in the header
+  const deleteSelectedBtn = document.getElementById('deleteSelectedBtn');
+  if (deleteSelectedBtn) {
+    deleteSelectedBtn.disabled = !hasSelection;
+  }
+}
+
+/**
+ * Delete all selected podcasts
+ */
+async function deleteSelectedPodcasts() {
+  if (selectedPodcasts.size === 0) return;
+  
+  const confirmMessage = selectedPodcasts.size === 1
+    ? 'Are you sure you want to delete the selected podcast?'
+    : `Are you sure you want to delete ${selectedPodcasts.size} selected podcasts?`;
+  
+  if (!confirm(confirmMessage)) return;
+  
+  try {
+    const deletePromises = Array.from(selectedPodcasts).map(id => deletePodcast(id));
+    await Promise.all(deletePromises);
+    
+    // Update arrays
+    allPodcasts = allPodcasts.filter(podcast => !selectedPodcasts.has(podcast.id));
+    
+    // Clear selection
+    selectedPodcasts.clear();
+    
+    // Update UI
+    displayPodcasts(allPodcasts);
+    
+    showStatus('Selected podcasts deleted successfully', 'success');
+  } catch (error) {
+    console.error('Error deleting podcasts:', error);
+    showStatus(`Error deleting podcasts: ${error.message}`, 'error');
+  }
+}
+
+/**
+ * Delete a podcast by ID
+ * @param {number} podcastId - Podcast ID
+ * @returns {Promise<void>}
+ */
+async function deletePodcast(podcastId) {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    
+    request.onerror = () => {
+      reject(new Error("Failed to open database."));
+    };
+    
+    request.onsuccess = (event) => {
+      const db = event.target.result;
+      const transaction = db.transaction(["audio"], "readwrite");
+      const store = transaction.objectStore("audio");
+      const deleteRequest = store.delete(podcastId);
+      
+      deleteRequest.onsuccess = () => {
+        resolve();
+      };
+      
+      deleteRequest.onerror = () => {
+        reject(new Error("Failed to delete podcast."));
+      };
+    };
+  });
+}
+
+/**
+ * Toggle expanding/collapsing all articles
+ */
+function toggleAllArticles() {
+  const toggleAllBtn = document.getElementById('toggleAllBtn');
+  const toggleAllIcon = document.getElementById('toggleAllIcon');
+  const toggleAllText = document.getElementById('toggleAllText');
+  const articleCards = document.querySelectorAll('.article-card');
+  
+  // Determine if we're expanding or collapsing
+  // Base this on the current button text
+  const isExpanding = toggleAllText.textContent.includes('Expand');
+  
+  // Update all cards
+  articleCards.forEach(card => {
+    const articleId = parseInt(card.dataset.id);
+    const fullContent = card.querySelector('.card-full-content');
+    const toggleIcon = card.querySelector('.toggle-icon');
+    const toggleText = card.querySelector('.toggle-text');
+    
+    if (isExpanding) {
+      // Expand this card
+      fullContent.style.display = 'block';
+      toggleIcon.textContent = '▲';
+      toggleText.textContent = 'Hide Full Article';
+      expandedArticles.add(articleId);
+    } else {
+      // Collapse this card
+      fullContent.style.display = 'none';
+      toggleIcon.textContent = '▼';
+      toggleText.textContent = 'Show Full Article';
+      expandedArticles.delete(articleId);
     }
+  });
+  
+  // Update the toggle all button
+  if (isExpanding) {
+    toggleAllIcon.textContent = '▲';
+    toggleAllText.textContent = 'Collapse All';
+  } else {
+    toggleAllIcon.textContent = '▼';
+    toggleAllText.textContent = 'Expand All';
+  }
 }
 
-// Add a clear cache button to the podcasts page
-function addClearCacheButton() {
-    const container = document.querySelector('.podcasts-container');
-    if (!container) return;
+// Fallback implementations if imports fail
+function safeEstimateAudioDuration(sizeInBytes) {
+  if (typeof estimateAudioDuration === 'function') {
+    return estimateAudioDuration(sizeInBytes);
+  }
+  // Fallback implementation: MP3 at ~128 kbps is about 16 KB per second
+  return Math.round(sizeInBytes / (16 * 1024));
+}
+
+function safeFormatDuration(seconds) {
+  if (typeof formatDuration === 'function') {
+    return formatDuration(seconds);
+  }
+  // Fallback implementation
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = Math.floor(seconds % 60);
+  return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`;
+}
+
+/**
+ * Initialize event listeners
+ */
+function initializeEventListeners() {
+  // Tab view buttons
+  const viewArticlesBtn = document.getElementById('viewArticlesBtn');
+  if (viewArticlesBtn) {
+    viewArticlesBtn.addEventListener('click', () => switchView('articles'));
+  }
+  
+  const viewPodcastsBtn = document.getElementById('viewPodcastsBtn');
+  if (viewPodcastsBtn) {
+    viewPodcastsBtn.addEventListener('click', () => switchView('podcasts'));
+  }
+  
+  // Search functionality
+  const searchInput = document.getElementById('searchInput');
+  if (searchInput) {
+    searchInput.addEventListener('input', (e) => searchArticles(e.target.value));
+    searchInput.addEventListener('keypress', (event) => {
+      if (event.key === 'Enter') {
+        const query = searchInput.value.trim();
+        searchArticles(query);
+      }
+    });
+  }
+  
+  const searchBtn = document.getElementById('searchBtn');
+  if (searchBtn) {
+    searchBtn.addEventListener('click', () => {
+      const query = document.getElementById('searchInput')?.value.trim() || '';
+      searchArticles(query);
+    });
+  }
+  
+  // Action buttons
+  const deleteSelectedBtn = document.getElementById('deleteSelectedBtn');
+  if (deleteSelectedBtn) {
+    deleteSelectedBtn.addEventListener('click', deleteSelectedArticles);
+  }
+  
+  const exportSelectedBtn = document.getElementById('exportSelectedBtn');
+  if (exportSelectedBtn) {
+    exportSelectedBtn.addEventListener('click', exportSelectedArticles);
+  }
+  
+  const generatePodcastBtn = document.getElementById('generatePodcastBtn');
+  if (generatePodcastBtn) {
+    generatePodcastBtn.addEventListener('click', openGeneratePodcastModal);
+  }
+  
+  // Generate podcast modal
+  const modalClose = document.querySelector('#generatePodcastModal .modal-close');
+  if (modalClose) {
+    modalClose.addEventListener('click', closeGeneratePodcastModal);
+  }
+  
+  const cancelGenerateBtn = document.getElementById('cancelGenerateBtn');
+  if (cancelGenerateBtn) {
+    cancelGenerateBtn.addEventListener('click', closeGeneratePodcastModal);
+  }
+  
+  const startGenerateBtn = document.getElementById('startGenerateBtn');
+  if (startGenerateBtn) {
+    startGenerateBtn.addEventListener('click', startPodcastGeneration);
+  }
+  
+  const downloadPodcastBtn = document.getElementById('downloadPodcastBtn');
+  if (downloadPodcastBtn) {
+    downloadPodcastBtn.addEventListener('click', downloadPodcast);
+  }
+  
+  const scriptToggle = document.getElementById('scriptToggle');
+  if (scriptToggle) {
+    scriptToggle.addEventListener('click', toggleScript);
+  }
+  
+  // Voice preview buttons
+  const previewHostVoiceBtn = document.getElementById('previewHostVoice');
+  if (previewHostVoiceBtn) {
+    previewHostVoiceBtn.addEventListener('click', previewHostVoice);
+  }
+  
+  const previewCohostVoiceBtn = document.getElementById('previewCohostVoice');
+  if (previewCohostVoiceBtn) {
+    previewCohostVoiceBtn.addEventListener('click', previewCohostVoice);
+  }
+  
+  // Select all checkbox
+  const selectAllCheckbox = document.getElementById('selectAllCheckbox');
+  if (selectAllCheckbox) {
+    selectAllCheckbox.addEventListener('change', toggleSelectAll);
+  }
+  
+  // Toggle all articles/podcasts
+  const toggleAllBtn = document.getElementById('toggleAllBtn');
+  if (toggleAllBtn) {
+    toggleAllBtn.addEventListener('click', toggleAllArticles);
+  }
+  
+  // Date filter
+  const applyDateFilterBtn = document.getElementById('applyDateFilterBtn');
+  if (applyDateFilterBtn) {
+    applyDateFilterBtn.addEventListener('click', applyDateFilter);
+  }
+  
+  const resetDateFilterBtn = document.getElementById('resetDateFilterBtn');
+  if (resetDateFilterBtn) {
+    resetDateFilterBtn.addEventListener('click', resetDateFilter);
+  }
+  
+  // Quick date filters
+  const todayFilterBtn = document.getElementById('todayFilterBtn');
+  if (todayFilterBtn) {
+    todayFilterBtn.addEventListener('click', () => applyQuickDateFilter('today'));
+  }
+  
+  const weekFilterBtn = document.getElementById('weekFilterBtn');
+  if (weekFilterBtn) {
+    weekFilterBtn.addEventListener('click', () => applyQuickDateFilter('week'));
+  }
+  
+  const monthFilterBtn = document.getElementById('monthFilterBtn');
+  if (monthFilterBtn) {
+    monthFilterBtn.addEventListener('click', () => applyQuickDateFilter('month'));
+  }
+  
+  const yearFilterBtn = document.getElementById('yearFilterBtn');
+  if (yearFilterBtn) {
+    yearFilterBtn.addEventListener('click', () => applyQuickDateFilter('year'));
+  }
+  
+  // Voice selection change handlers
+  const hostVoiceSelect = document.getElementById('hostVoiceSelect');
+  const cohostVoiceSelect = document.getElementById('cohostVoiceSelect');
+  
+  if (hostVoiceSelect) {
+    hostVoiceSelect.addEventListener('change', () => {
+      updateVoiceLabels();
+      validateVoiceSelections();
+    });
+  }
+  
+  if (cohostVoiceSelect) {
+    cohostVoiceSelect.addEventListener('change', () => {
+      updateVoiceLabels();
+      validateVoiceSelections();
+    });
+  }
+  
+  // Initial update of voice labels
+  updateVoiceLabels();
+}
+
+/**
+ * Preview the host voice
+ */
+async function previewHostVoice() {
+  const voice = document.getElementById('hostVoiceSelect').value;
+  await playVoicePreview(voice);
+}
+
+/**
+ * Preview the co-host voice
+ */
+async function previewCohostVoice() {
+  const voice = document.getElementById('cohostVoiceSelect').value;
+  await playVoicePreview(voice);
+}
+
+/**
+ * Play a sample of the selected voice
+ * @param {string} voice - The voice ID (e.g., "alloy", "onyx")
+ */
+async function playVoicePreview(voice) {
+  try {
+    const voiceNameMap = {
+      'alloy': 'Esha',
+      'echo': 'Hari',
+      'fable': 'Mira',
+      'onyx': 'Tej',
+      'nova': 'Leela',
+      'shimmer': 'Veena'
+    };
     
-    const clearCacheBtn = document.createElement('button');
-    clearCacheBtn.textContent = 'Clear Audio Cache';
-    clearCacheBtn.className = 'clear-cache-btn';
-    clearCacheBtn.style.cssText = 'background-color: #4285f4; color: white; border: none; padding: 8px 16px; margin: 10px 0; border-radius: 4px; cursor: pointer;';
+    // Show status with the mapped name
+    showStatus(`Loading ${voiceNameMap[voice]} voice sample...`, 'info');
     
-    clearCacheBtn.addEventListener('click', async () => {
-        clearCacheBtn.disabled = true;
-        clearCacheBtn.textContent = 'Clearing...';
-        
-        const cleared = await clearAudioCaches();
-        
-        if (cleared) {
-            alert('Audio cache cleared successfully. Please reload the page to see changes.');
-            window.location.reload();
-        } else {
-            alert('Failed to clear cache. Try manually clearing browser cache.');
-            clearCacheBtn.disabled = false;
-            clearCacheBtn.textContent = 'Clear Audio Cache';
-        }
+    // Get the OpenAI API key
+    const apiKey = await getSetting('openai_api_key');
+    if (!apiKey) {
+      throw new Error('OpenAI API key not set. Please go to settings and add your API key.');
+    }
+    
+    // Sample text for each voice using mapped names
+    const sampleTexts = {
+      'alloy': `Hi, I'm Esha. I am a versatile voice that can adapt to various content styles.`,
+      'echo': `Hi, I'm Hari. I have a soft-spoken and articulate voice, ideal for educational content.`,
+      'fable': `Hi, I'm Mira. I have a narration style that's great for storytelling and creative content.`,
+      'onyx': `Hi, I'm Tej. I have a deep, authoritative voice suited for professional presentations.`,
+      'nova': `Hi, I'm Leela. My voice is clear and energetic, good for delivering news or explanations.`,
+      'shimmer': `Hi, I'm Veena. I have a warm, welcoming voice perfect for friendly conversations.`
+    };
+    
+    // Use the sample text for the selected voice or a default
+    const text = sampleTexts[voice] || `This is a sample of the ${voice} voice.`;
+    
+    // Create a button that's already in the DOM to disable
+    const previewButtons = document.querySelectorAll('#previewHostVoice, #previewCohostVoice');
+    previewButtons.forEach(btn => {
+      btn.disabled = true;
+      btn.textContent = 'Loading...';
     });
     
-    container.insertBefore(clearCacheBtn, container.firstChild);
+    // Generate the audio
+    const response = await fetch('https://api.openai.com/v1/audio/speech', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'tts-1',
+        voice: voice,
+        input: text
+      })
+    });
+    
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(`OpenAI API error: ${response.status} - ${JSON.stringify(errorData)}`);
+    }
+    
+    // Convert the response to a blob
+    const audioBlob = await response.blob();
+    
+    // Create a URL for the audio blob
+    const audioUrl = URL.createObjectURL(audioBlob);
+    
+    // Create an audio element to play the sample
+    const audioElement = new Audio(audioUrl);
+    audioElement.onended = () => {
+      // Clean up the object URL when done playing
+      URL.revokeObjectURL(audioUrl);
+      // Re-enable the preview buttons
+      previewButtons.forEach(btn => {
+        btn.disabled = false;
+        btn.textContent = 'Preview Voice';
+      });
+    };
+    
+    // Play the audio
+    audioElement.play();
+    showStatus(`Playing ${voiceNameMap[voice]} voice sample`, 'success');
+    
+  } catch (error) {
+    console.error('Error playing voice sample:', error);
+    showStatus(`Error playing voice sample: ${error.message}`, 'error');
+    
+    // Re-enable the preview buttons
+    const previewButtons = document.querySelectorAll('#previewHostVoice, #previewCohostVoice');
+    previewButtons.forEach(btn => {
+      btn.disabled = false;
+      btn.textContent = 'Preview Voice';
+    });
+  }
 }
 
-// Call this function when loading the podcasts page
-document.addEventListener('DOMContentLoaded', () => {
-    const podcastsContainer = document.querySelector('.podcasts-container');
-    if (podcastsContainer) {
-        addClearCacheButton();
-    }
-});
+/**
+ * Toggle the script visibility
+ */
+function toggleScript() {
+  const scriptElement = document.getElementById('podcastScript');
+  const toggleButton = document.getElementById('scriptToggle');
+  
+  if (scriptElement.style.display === 'none') {
+    scriptElement.style.display = 'block';
+    toggleButton.textContent = 'Hide Script';
+  } else {
+    scriptElement.style.display = 'none';
+    toggleButton.textContent = 'Show Script';
+  }
+}
+
+/**
+ * Update the voice selection labels to show the corresponding names
+ */
+function updateVoiceLabels() {
+  const voiceNameMap = {
+    'alloy': 'Esha',
+    'echo': 'Hari',
+    'fable': 'Mira',
+    'onyx': 'Tej',
+    'nova': 'Leela',
+    'shimmer': 'Veena'
+  };
+  
+  const hostVoiceSelect = document.getElementById('hostVoiceSelect');
+  const cohostVoiceSelect = document.getElementById('cohostVoiceSelect');
+  const hostLabel = document.querySelector('label[for="hostVoiceSelect"]');
+  const cohostLabel = document.querySelector('label[for="cohostVoiceSelect"]');
+  
+  // Update the dropdown options to show only the mapped names
+  if (hostVoiceSelect) {
+    const currentValue = hostVoiceSelect.value;
+    hostVoiceSelect.innerHTML = Object.entries(voiceNameMap)
+      .map(([value, name]) => `<option value="${value}">${name}</option>`)
+      .join('');
+    hostVoiceSelect.value = currentValue;
+  }
+  
+  if (cohostVoiceSelect) {
+    const currentValue = cohostVoiceSelect.value;
+    cohostVoiceSelect.innerHTML = Object.entries(voiceNameMap)
+      .map(([value, name]) => `<option value="${value}">${name}</option>`)
+      .join('');
+    cohostVoiceSelect.value = currentValue;
+  }
+  
+  // Update labels to be simple "Host Voice" and "Co-Host Voice"
+  if (hostLabel) {
+    hostLabel.textContent = 'Host Voice';
+  }
+  
+  if (cohostLabel) {
+    cohostLabel.textContent = 'Co-Host Voice';
+  }
+}

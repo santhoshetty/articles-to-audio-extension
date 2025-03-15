@@ -1,2 +1,0 @@
-id,podcast_id,status,total_chunks,completed_chunks,error,created_at,updated_at,user_id
-c64ab137-f340-4b1e-9e5e-fc77137aeaf8,9ddaee1c-b58e-4fe2-9664-005b820f01a3,processing,18,11,,2025-03-01 07:28:56.912513+00,2025-03-01 07:35:20.539329+00,17abd9a3-a3c7-4a17-9692-171809b4f857

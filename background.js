@@ -1,405 +1,407 @@
 // background.js
 
-// Import the Supabase client
-import supabase from './supabaseClient';
+// Import local database operations
+import { saveArticle } from './db.js';
+import { generateSummary, generateTitle } from './openai.js';
 
-// Session management
-let currentSession = null;
-let sessionInitialized = false;
+// Extension initialization flag
+let initialized = false;
 
-async function initializeSession() {
-    console.log('Initializing session in background...');
+// Initialize the extension when installed or updated
+chrome.runtime.onInstalled.addListener(() => {
+  console.log('Extension installed or updated');
+  initialize();
+});
+
+// Initialize on startup
+chrome.runtime.onStartup.addListener(() => {
+  console.log('Browser started, initializing extension');
+  initialize();
+});
+
+// Handle content script ready messages
+chrome.runtime.onMessage.addListener((request, sender) => {
+  if (request.action === "CONTENT_SCRIPT_READY") {
+    console.log("Content script ready in tab:", sender.tab?.id);
+    return false;
+  }
+});
+
+// Initialize the extension
+async function initialize() {
+  if (initialized) return;
+  
+  console.log('Initializing extension');
+  
+  try {
+    // Register a handler for article extraction requests
+    chrome.runtime.onMessage.addListener(handleMessages);
     
+    initialized = true;
+    console.log('Extension initialized successfully');
+  } catch (error) {
+    console.error('Error initializing extension:', error);
+  }
+}
+
+// Handle messages from content scripts and popup
+function handleMessages(request, sender, sendResponse) {
+  console.log('Background received message:', request.action || request.type);
+  
+  if (request.action === "SAVE_ARTICLE") {
+    handleSaveArticle(request.payload)
+      .then(result => sendResponse(result))
+      .catch(error => {
+        console.error('Error saving article:', error);
+        sendResponse({ success: false, error: error.message });
+      });
+    return true; // Keep the message channel open for async response
+  }
+  
+  if (request.action === "EXTRACT_ARTICLE") {
+    handleExtractArticle(sender.tab)
+      .then(result => sendResponse(result))
+      .catch(error => {
+        console.error('Error extracting article:', error);
+        sendResponse({ success: false, error: error.message });
+      });
+    return true; // Keep the message channel open for async response
+  }
+  
+  if (request.action === "EXTRACT_ARTICLE_FALLBACK") {
+    const tabId = request.tabId;
+    // Get the tab info
+    chrome.tabs.get(tabId)
+      .then(tab => handleExtractArticleFallback(tab))
+      .then(result => sendResponse(result))
+      .catch(error => {
+        console.error('Error in fallback extraction:', error);
+        sendResponse({ success: false, error: error.message });
+      });
+    return true; // Keep the message channel open for async response
+  }
+  
+  // Default response for unhandled messages
+  return false;
+}
+
+/**
+ * Extract article content from the current tab
+ * @param {chrome.tabs.Tab} tab - Current tab
+ * @returns {Promise<Object>} Extracted article data
+ */
+async function handleExtractArticle(tab) {
+  if (!tab || !tab.id) {
+    throw new Error('No active tab found');
+  }
+  
+  try {
+    console.log(`Attempting to extract article from tab ${tab.id} (${tab.url})`);
+    
+    // First, check if on a valid page
+    const invalidSites = [
+      'chrome://', 'chrome-extension://', 'about:', 'file:',
+      'chrome.google.com', 'addons.mozilla.org'
+    ];
+    
+    if (invalidSites.some(site => tab.url.startsWith(site))) {
+      throw new Error(`Cannot extract from ${tab.url}. Please try with a regular web page.`);
+    }
+    
+    // Attempt to inject the content script
     try {
-        // First check if we have a session in chrome.storage.local
-        const storedSession = await chrome.storage.local.get('supabase.auth.token');
-        if (storedSession && storedSession['supabase.auth.token']) {
-            console.log('Found stored session in chrome.storage.local');
-        }
-        
-        // Check Supabase session
-        const { data: { session }, error } = await supabase.auth.getSession();
-        
-        if (error) {
-            console.error('Error getting Supabase session:', error.message);
-            currentSession = null;
-            sessionInitialized = true;
-            // Clear any stored session data if there's an error
-            await chrome.storage.local.remove('supabase.auth.token');
-            return;
-        }
-        
-        if (session) {
-            console.log('Supabase session found:', {
-                user: session.user.email,
-                user_id: session.user.id,
-                expires_at: session.expires_at
-            });
-            currentSession = session;
-            sessionInitialized = true;
-            
-            // Store the session in chrome.storage.local
-            await chrome.storage.local.set({
-                'supabase.auth.token': session
-            });
-            
-            // Set up session refresh before expiry
-            const expiresAt = new Date(session.expires_at).getTime();
-            const now = new Date().getTime();
-            const timeToExpiry = expiresAt - now;
-            
-            if (timeToExpiry > 0) {
-                setTimeout(async () => {
-                    console.log('Refreshing session...');
-                    const { data: { session: refreshedSession }, error: refreshError } = await supabase.auth.refreshSession();
-                    if (!refreshError && refreshedSession) {
-                        currentSession = refreshedSession;
-                        broadcastAuthStateChange('REFRESHED', refreshedSession);
-                    }
-                }, Math.max(0, timeToExpiry - (5 * 60 * 1000))); // Refresh 5 minutes before expiry
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ['contentScript.js']
+      });
+      console.log("Content script injection successful");
+    } catch (err) {
+      console.error("Content script injection error:", err);
+      // If we can't inject, try to proceed anyway as the content script might already be there
+      if (err.message.includes("Cannot access")) {
+        throw new Error("Cannot access page content. Please try with a regular web page.");
+      }
+    }
+    
+    // Create a timeout promise
+    const timeout = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error("Article extraction timed out")), 10000)
+    );
+    
+    // Try to ping the content script first
+    try {
+      const pingPromise = chrome.tabs.sendMessage(tab.id, { action: "PING" });
+      const pingResponse = await Promise.race([pingPromise, timeout])
+        .catch(err => {
+          console.warn("Content script ping failed:", err);
+          return null;
+        });
+      
+      if (!pingResponse || pingResponse.status !== "PONG") {
+        console.warn("Content script not responding to ping properly:", pingResponse);
+      } else {
+        console.log("Content script is responsive in tab", tab.id);
+      }
+    } catch (err) {
+      console.warn("Error checking content script:", err);
+      // Continue anyway
+    }
+    
+    // Request article extraction from content script
+    const extractPromise = chrome.tabs.sendMessage(tab.id, { action: "EXTRACT_ARTICLE" });
+    const articleData = await Promise.race([extractPromise, timeout]);
+    
+    // Check for valid response
+    if (!articleData) {
+      throw new Error("No response from content script");
+    }
+    
+    if (articleData.error) {
+      throw new Error(articleData.error);
+    }
+    
+    if (!articleData.text || articleData.text.length < 100) {
+      throw new Error("Extracted content is too short or empty");
+    }
+    
+    console.log("Article extraction successful:", {
+      title: articleData.title,
+      textLength: articleData.text.length
+    });
+    
+    return articleData;
+  } catch (error) {
+    console.error('Error in article extraction:', error);
+    throw new Error('Failed to extract article content: ' + error.message);
+  }
+}
+
+/**
+ * Fallback article extraction using executeScript to run in the page context
+ * @param {chrome.tabs.Tab} tab - Current tab
+ * @returns {Promise<Object>} Extracted article data
+ */
+async function handleExtractArticleFallback(tab) {
+  if (!tab || !tab.id) {
+    throw new Error('No valid tab provided for fallback extraction');
+  }
+
+  console.log(`Attempting fallback extraction from tab ${tab.id}`);
+  
+  try {
+    // Execute a script that directly extracts content in the page context
+    const [extractionResult] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => {
+        // In-page extraction function
+        function extractTextFromPage() {
+          try {
+            // Helper to clean text
+            function cleanText(text) {
+              return text.replace(/\s+/g, ' ').trim();
             }
             
-            return;
-        }
-        
-        console.log('No valid Supabase session found');
-        currentSession = null;
-        sessionInitialized = true;
-        await chrome.storage.local.remove('supabase.auth.token');
-    } catch (error) {
-        console.error('Error in initializeSession:', error);
-        currentSession = null;
-        sessionInitialized = true;
-        await chrome.storage.local.remove('supabase.auth.token');
-    }
-}
-
-// Initialize session when extension loads
-initializeSession().catch(error => {
-    console.error('Failed to initialize session:', error);
-    sessionInitialized = true;
-});
-
-// Listen for auth state changes
-supabase.auth.onAuthStateChange((event, session) => {
-    console.log('Supabase auth state changed:', {
-        event,
-        has_session: !!session,
-        user: session?.user?.email
-    });
-    
-    currentSession = session;
-    
-    // Store the session in chrome.storage.local
-    if (session) {
-        chrome.storage.local.set({
-            'supabase.auth.token': session
-        }).catch(error => {
-            console.error('Error storing session:', error);
-        });
-    } else {
-        chrome.storage.local.remove('supabase.auth.token').catch(error => {
-            console.error('Error removing session:', error);
-        });
-    }
-    
-    broadcastAuthStateChange(event, session);
-});
-
-// Helper function to broadcast auth state changes
-function broadcastAuthStateChange(event, session) {
-    // Check if we're in the middle of authentication
-    chrome.storage.local.get('auth_in_progress').then(({ auth_in_progress }) => {
-        if (!auth_in_progress) {
-            chrome.runtime.sendMessage({
-                type: 'AUTH_STATE_CHANGED',
-                payload: { event, session }
-            }).catch(error => {
-                // Ignore errors from no listeners
-                if (!error.message.includes('Could not establish connection')) {
-                    console.error('Error broadcasting auth state:', error);
+            // Extract title
+            const title = document.title || '';
+            
+            // Try a variety of methods to extract content
+            let content = '';
+            
+            // Method 1: Try article/main content selectors
+            const contentSelectors = [
+              'article', 'main', '[role="main"]', '.article', '.post', '.content',
+              '#content', '.main-content', '.article-content', '.post-content'
+            ];
+            
+            for (const selector of contentSelectors) {
+              const element = document.querySelector(selector);
+              if (element) {
+                const text = element.innerText;
+                if (text && text.length > 200) {
+                  content = text;
+                  break;
                 }
-            });
+              }
+            }
+            
+            // Method 2: If no content yet, try all paragraphs
+            if (!content || content.length < 200) {
+              const paragraphs = Array.from(document.querySelectorAll('p'))
+                .filter(p => p.innerText.length > 30) // Only substantive paragraphs
+                .map(p => p.innerText.trim())
+                .join('\n\n');
+              
+              if (paragraphs.length > 200) {
+                content = paragraphs;
+              }
+            }
+            
+            // Method 3: Last resort, use body text
+            if (!content || content.length < 200) {
+              // Clone body to remove unwanted elements
+              const bodyClone = document.body.cloneNode(true);
+              
+              // Remove clearly non-content elements
+              const unwanted = bodyClone.querySelectorAll(
+                'nav, header, footer, script, style, iframe, .nav, .menu, .header, .footer, .sidebar, .comments, aside'
+              );
+              unwanted.forEach(el => el.remove());
+              
+              content = bodyClone.innerText;
+            }
+            
+            return { title, text: content, url: window.location.href };
+          } catch (error) {
+            return { error: error.message || 'Unknown error in extraction script' };
+          }
         }
+        
+        return extractTextFromPage();
+      }
     });
+    
+    if (!extractionResult || extractionResult.error) {
+      throw new Error(extractionResult?.error || 'Failed to extract content from page');
+    }
+    
+    const result = extractionResult.result;
+    
+    if (!result || !result.text || result.text.length < 100) {
+      throw new Error('Extracted content is too short or empty from fallback method');
+    }
+    
+    console.log('Fallback extraction successful:', {
+      title: result.title,
+      textLength: result.text.length
+    });
+    
+    return result;
+  } catch (error) {
+    console.error('Error in fallback extraction:', error);
+    throw new Error('Failed to extract content using fallback method: ' + error.message);
+  }
 }
 
-// Listen for messages from other parts of the extension
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-    console.log('Background received message:', request.action || request.type);
-    
-    if (request.type === 'AUTH_STATE_CHANGED') {
-        console.log('Auth state changed:', request.payload);
-        currentSession = request.payload.session;
-        sessionInitialized = true;
-        
-        // Store the session
-        if (request.payload.session) {
-            chrome.storage.local.set({
-                'supabase.auth.token': request.payload.session
-            }).catch(error => {
-                console.error('Error storing session:', error);
-            });
-        }
-        
-        sendResponse({ success: true });
-        return true;
-    }
-    
-    if (request.action === "GET_SESSION") {
-        // If session isn't initialized yet, wait for it
-        if (!sessionInitialized) {
-            initializeSession()
-                .then(() => sendResponse({ session: currentSession }))
-                .catch(error => {
-                    console.error('Error getting session:', error);
-                    sendResponse({ session: null, error: error.message });
-                });
-            return true;
-        }
-        
-        // Session is already initialized, respond immediately
-        sendResponse({ session: currentSession });
-        return true;
-    }
-    
-    if (request.action === "SAVE_ARTICLE") {
-        if (!currentSession) {
-            console.error('Attempting to save article without authentication');
-            console.log('Current session:', currentSession);
-            sendResponse({ success: false, error: 'Authentication required' });
-            return true;
-        }
-        
-        handleSaveArticle(request.payload)
-            .then(result => sendResponse(result))
-            .catch(error => {
-                console.error('Error saving article:', error);
-                sendResponse({ success: false, error: error.message });
-            });
-        return true;
-    }
-    
-    if (request.action === "GOOGLE_SIGN_IN") {
-        handleGoogleSignIn()
-            .then(result => sendResponse(result))
-            .catch(error => {
-                console.error('Error in Google sign-in:', error);
-                sendResponse({ success: false, error: error.message });
-            });
-        return true;  // Keep the message channel open for async response
-    }
-});
-
+/**
+ * Save an article to local storage
+ * @param {Object} articleData - Article data to save
+ * @returns {Promise<Object>} Save result
+ */
 async function handleSaveArticle(articleData) {
-    try {
-        console.log('Attempting to save article to Supabase:', {
-            title: articleData.title,
-            date: articleData.date
-        });
+  try {
+    console.log('Saving article locally:', {
+      title: articleData.title,
+      url: articleData.url,
+      contentLength: articleData.text ? articleData.text.length : 0
+    });
 
-        // Get the latest session
-        const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-        
-        if (sessionError || !session) {
-            console.error('Session error:', sessionError);
-            throw new Error('No valid session found');
-        }
-
-        // Update current session
-        currentSession = session;
-
-        // Debug log for user ID and session details
-        console.log('Current user session details:', {
-            user_id: session.user.id,
-            email: session.user.email,
-            session_expires_at: session.expires_at,
-            access_token: session.access_token ? 'Present' : 'Missing'
-        });
-
-        // Check if title is provided, if not generate it
-        if (!articleData.title) {
-            console.log('Generating title for article content:', articleData.text); // Debugging line
-            // Call the Supabase edge function to generate the title
-            const { data: titleData, error: titleError } = await supabase.functions.invoke('generate-title', {
-                body: { text: articleData.text }
-            });
-
-            if (titleError) {
-                console.error('Error generating title:', titleError);
-                articleData.title = 'Untitled Article'; // Fallback title
-            } else {
-                articleData.title = titleData.title || 'Untitled Article';
-            }
-        }
-
-        // Insert the article with detailed error logging
-        const { data, error } = await supabase
-            .from('articles')
-            .insert([
-                {
-                    title: articleData.title,
-                    content: articleData.text,
-                    user_id: session.user.id,
-                    created_at: articleData.date
-                }
-            ])
-            .select()
-            .single();
-
-        if (error) {
-            console.error('Supabase error details:', {
-                code: error.code,
-                message: error.message,
-                details: error.details,
-                hint: error.hint,
-                status: error.status
-            });
-            throw new Error(`Failed to save article to database: ${error.message}`);
-        }
-
-        console.log('Article saved successfully to Supabase:', {
-            article_id: data.id,
-            title: data.title,
-            created_at: data.created_at,
-            user_id: data.user_id
-        });
-
-        // Return success with the saved article data
-        return { 
-            success: true, 
-            article: data 
-        };
-    } catch (error) {
-        console.error('Error in handleSaveArticle:', error);
-        // Include more context in the error message
-        const errorMessage = error.message || 'Unknown error occurred';
-        throw new Error(`Failed to save article: ${errorMessage}`);
+    // Validate article data
+    if (!articleData.text || articleData.text.length < 100) {
+      throw new Error('Article content is too short or missing');
     }
+
+    // Additional validation to detect if the content is likely minified JavaScript
+    const jsDetectionPatterns = [
+      // Check for common minified JS patterns
+      /function\(\s*\)\s*{\s*['"]use strict['"]/,
+      /new [A-Za-z]+\([a-z],[a-z],[a-z]\){/,
+      /\([a-z],(?:\[[a-z]\]|\{[a-z]\}),[a-z]\)=>/,
+      /var [a-zA-Z]{1,2}=function\(/,
+      /var [a-zA-Z]{1,2}=/
+    ];
+
+    const jsSymbolDensityThreshold = 0.1; // 10% of content is JS-like symbols
+    const jsSymbolCount = (articleData.text.match(/[{}();=><[\]]/g) || []).length;
+    const jsSymbolDensity = jsSymbolCount / articleData.text.length;
+
+    // Check for signs of minified JS
+    const hasJsPatterns = jsDetectionPatterns.some(pattern => pattern.test(articleData.text));
+    const hasHighSymbolDensity = jsSymbolDensity > jsSymbolDensityThreshold;
+
+    if (hasJsPatterns && hasHighSymbolDensity) {
+      console.error('Detected minified JavaScript instead of article content');
+      throw new Error('Cannot save: Content appears to be JavaScript code rather than an article');
+    }
+
+    // Generate title if not provided
+    if (!articleData.title) {
+      console.log('Generating title for article content');
+      try {
+        articleData.title = await generateTitle(articleData.text);
+      } catch (error) {
+        console.error('Error generating title:', error);
+        articleData.title = 'Untitled Article'; // Fallback title
+      }
+    }
+    
+    // Generate summary if needed
+    if (!articleData.summary && articleData.text) {
+      console.log('Generating summary for article content');
+      try {
+        articleData.summary = await generateSummary(articleData.text);
+      } catch (error) {
+        console.error('Error generating summary:', error);
+        // Continue without a summary
+      }
+    }
+
+    // Prepare article object for storage
+    // Use current timestamp to generate a unique URL if needed
+    let url = articleData.url;
+    if (!url) {
+      try {
+        url = await getCurrentTabUrl();
+      } catch (error) {
+        console.warn('Could not get current tab URL:', error);
+        // Generate a placeholder URL with timestamp
+        url = `article-${new Date().getTime()}`;
+      }
+    }
+
+    const articleToSave = {
+      title: articleData.title,
+      content: articleData.text,
+      summary: articleData.summary,
+      url: url,
+      dateAdded: articleData.date || new Date().toISOString()
+    };
+
+    // Save article to IndexedDB
+    const articleId = await saveArticle(articleToSave);
+
+    console.log('Article saved successfully to local storage:', {
+      article_id: articleId,
+      title: articleToSave.title
+    });
+
+    // Return success with the saved article data
+    return { 
+      success: true, 
+      article: {
+        id: articleId,
+        ...articleToSave
+      }
+    };
+  } catch (error) {
+    console.error('Error saving article:', error);
+    return { 
+      success: false, 
+      error: error.message 
+    };
+  }
 }
 
-// Add this new function for handling Google sign-in
-async function handleGoogleSignIn() {
-    console.log('Background: Starting Google sign-in process...');
-    try {
-        const redirectUrl = chrome.identity.getRedirectURL();
-        console.log('Redirect URL:', redirectUrl);
-
-        // Initialize Supabase OAuth
-        const { data, error } = await supabase.auth.signInWithOAuth({
-            provider: 'google',
-            options: {
-                redirectTo: redirectUrl,
-                skipBrowserRedirect: true,
-                queryParams: {
-                    access_type: 'offline',
-                    prompt: 'consent'
-                }
-            }
-        });
-
-        if (error) {
-            console.error('Background: Supabase OAuth initialization error:', error);
-            throw error;
-        }
-
-        const authURL = data.url;
-        console.log('Background: Got auth URL from Supabase');
-        
-        // Use Chrome's identity API to handle the OAuth flow
-        const responseUrl = await new Promise((resolve, reject) => {
-            chrome.identity.launchWebAuthFlow({
-                url: authURL,
-                interactive: true
-            }, (redirectUrl) => {
-                if (chrome.runtime.lastError) {
-                    reject(chrome.runtime.lastError);
-                    return;
-                }
-                resolve(redirectUrl);
-            });
-        });
-
-        if (!responseUrl) {
-            throw new Error('No response URL received');
-        }
-
-        // Extract tokens from URL
-        const url = new URL(responseUrl);
-        const params = new URLSearchParams(url.hash.substring(1));
-        const access_token = params.get('access_token');
-        const refresh_token = params.get('refresh_token');
-
-        if (!access_token) {
-            throw new Error('No access token received');
-        }
-
-        // Set the session in Supabase
-        const { data: sessionData, error: sessionError } = await supabase.auth.setSession({
-            access_token,
-            refresh_token
-        });
-
-        if (sessionError) {
-            throw sessionError;
-        }
-
-        // Get user data
-        const { data: { user }, error: userError } = await supabase.auth.getUser();
-        
-        if (userError) {
-            console.error('Error getting user data:', userError);
-            throw userError;
-        }
-
-        if (!user) {
-            throw new Error('No user data received');
-        }
-
-        console.log('Got user data:', user);
-
-        try {
-            // Try to insert the user into the users table
-            const { error: insertError } = await supabase
-                .from('users')
-                .insert([
-                    {
-                        id: user.id,
-                        email: user.email,
-                        created_at: new Date().toISOString()
-                    }
-                ])
-                .single();
-
-            if (insertError) {
-                // If error is not a duplicate key violation, then it's a real error
-                if (!insertError.message.includes('duplicate key')) {
-                    console.error('Error inserting user:', insertError);
-                    throw insertError;
-                }
-                // If it's a duplicate key error, that's fine - the user already exists
-                console.log('User already exists in users table');
-            } else {
-                console.log('Successfully created new user in users table');
-            }
-        } catch (dbError) {
-            console.error('Database operation failed:', dbError);
-            // Don't throw here - we want to continue with the sign-in process
-            // even if the users table operation fails
-        }
-
-        // Store session
-        currentSession = sessionData.session;
-        await chrome.storage.local.set({
-            'supabase.auth.token': sessionData.session
-        });
-
-        // Broadcast the auth state change
-        broadcastAuthStateChange('SIGNED_IN', sessionData.session);
-
-        return { success: true, session: sessionData.session };
-    } catch (error) {
-        console.error('Background: Error in Google sign-in process:', error);
-        return { success: false, error: error.message };
-    }
+/**
+ * Get the URL of the current active tab
+ * @returns {Promise<string>} Current tab URL
+ */
+async function getCurrentTabUrl() {
+  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (tabs && tabs.length > 0) {
+    return tabs[0].url;
+  }
+  return '';
 }
+
+// Initialize the extension
+initialize();
